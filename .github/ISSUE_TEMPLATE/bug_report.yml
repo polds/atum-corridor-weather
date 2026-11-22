@@ -1,0 +1,47 @@
+name: Bug report
+description: Corridor Weather did something wrong. For a gap in Atum's docs, use the doc friction form.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Corridor Weather is an unofficial community project, not an Atum product. Report problems with the Atum gateway or settlers to Atum.
+        To report a security problem, do not open an issue. Follow SECURITY.md.
+  - type: dropdown
+    id: part
+    attributes:
+      label: Part
+      options:
+        - Prober (scheduled tick)
+        - Dashboard
+        - JSON endpoints or /metrics
+        - CI or deploy workflow
+        - Documentation in this repository
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: Paste the response, log line or screenshot.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. pnpm run dev
+        2. curl "http://localhost:8787/__scheduled?cron=*/5+*+*+*+*"
+        3. ...
+  - type: input
+    id: version
+    attributes:
+      label: Commit or deployed version
+      description: The output of `git rev-parse HEAD`, or the URL of the deployment you saw it on.

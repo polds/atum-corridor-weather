@@ -18,13 +18,13 @@ A Cloudflare Worker runs on a cron schedule. Each run is a tick. A tick does fiv
 
 The Worker also serves the dashboard and four read-only endpoints.
 
-| Path | Returns |
-| --- | --- |
-| `/` | The static dashboard |
-| `/api/v1/snapshot.json` | Current conditions for every corridor, written once per tick |
-| `/api/v1/corridors/{id}/history.json` | History for one corridor |
-| `/api/v1/health` | `200` when no alert is active, `503` with the alert list otherwise |
-| `/metrics` | The same signals in Prometheus text format |
+| Path                                  | Returns                                                            |
+| ------------------------------------- | ------------------------------------------------------------------ |
+| `/`                                   | The static dashboard                                               |
+| `/api/v1/snapshot.json`               | Current conditions for every corridor, written once per tick       |
+| `/api/v1/corridors/{id}/history.json` | History for one corridor                                           |
+| `/api/v1/health`                      | `200` when no alert is active, `503` with the alert list otherwise |
+| `/metrics`                            | The same signals in Prometheus text format                         |
 
 ## Why it cannot move funds
 
@@ -39,12 +39,12 @@ The design removes the ability to spend. It does not rely on care.
 
 Two shapes were sketched.
 
-| | Shape A: pure tick pipeline, one store | Shape B: raw log in R2, views built on read |
-| --- | --- | --- |
-| State owners | D1 owns everything | R2 owns raw data, a second store owns views |
-| Public read cost | One row read per page view | Aggregation on every read, or a second pipeline |
-| Recompute later | Yes, raw exchanges are kept in `probe_raw` | Yes |
-| Moving parts | 1 Worker, 1 D1 | 1 Worker, R2, plus a view store |
+|                  | Shape A: pure tick pipeline, one store     | Shape B: raw log in R2, views built on read     |
+| ---------------- | ------------------------------------------ | ----------------------------------------------- |
+| State owners     | D1 owns everything                         | R2 owns raw data, a second store owns views     |
+| Public read cost | One row read per page view                 | Aggregation on every read, or a second pipeline |
+| Recompute later  | Yes, raw exchanges are kept in `probe_raw` | Yes                                             |
+| Moving parts     | 1 Worker, 1 D1                             | 1 Worker, R2, plus a view store                 |
 
 Shape A is the choice. It keeps one owner for each piece of state and still keeps every raw response. Moving `probe_raw` to R2 later is a storage change, not a redesign.
 
@@ -62,12 +62,12 @@ The dependency direction is one way. `domain` imports nothing. `gateway` and `st
 
 The brief requires `@atumlabs/payment-gateway-client` 6.0.0 or later so that `quote_selector` is the depositor and not the gateway's own selector. Two ways to meet that were tried.
 
-| | SDK inside the Worker | Wire format in the Worker, SDK in tests |
-| --- | --- | --- |
-| Worker bundle | 680 KiB gzipped: the SDK brings axios, ethers and the Solana client | The prober's own code only |
-| Runs on `workerd` | Only with a hand-written transport, because the SDK's HTTP layer fails there ([FRICTION.md](../FRICTION.md), item 1) | Yes, plain `fetch` |
-| Couples to SDK internals | Yes, to an unexported transport type | No |
-| Who decides `quote_selector` | The SDK, at run time | The prober, checked against the SDK on every test run |
+|                              | SDK inside the Worker                                                                                                | Wire format in the Worker, SDK in tests               |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Worker bundle                | 680 KiB gzipped: the SDK brings axios, ethers and the Solana client                                                  | The prober's own code only                            |
+| Runs on `workerd`            | Only with a hand-written transport, because the SDK's HTTP layer fails there ([FRICTION.md](../FRICTION.md), item 1) | Yes, plain `fetch`                                    |
+| Couples to SDK internals     | Yes, to an unexported transport type                                                                                 | No                                                    |
+| Who decides `quote_selector` | The SDK, at run time                                                                                                 | The prober, checked against the SDK on every test run |
 
 The second is the choice. It is the pattern [tip-me-a-coffee](https://github.com/polds/tip-me-a-coffee) uses: the Worker speaks the wire format as pure functions over `fetch`, and the real SDK is the counterparty in tests.
 
@@ -109,11 +109,11 @@ Measured, no. A keyless, unfunded address that has never transacted received a s
 
 No field for it exists in the API reference or the SDK. Corridor Weather marks its traffic three ways, and operators can filter on any of them.
 
-| Marker | Value |
-| --- | --- |
-| `source.account` and `destination[].account` | The keyless probe accounts listed in the README |
-| `request_id` prefix | `cw1.` |
-| `User-Agent` | `corridor-weather/{version} (+{repository URL}; synthetic probe)` |
+| Marker                                       | Value                                                             |
+| -------------------------------------------- | ----------------------------------------------------------------- |
+| `source.account` and `destination[].account` | The keyless probe accounts listed in the README                   |
+| `request_id` prefix                          | `cw1.`                                                            |
+| `User-Agent`                                 | `corridor-weather/{version} (+{repository URL}; synthetic probe)` |
 
 The account is the durable marker, because operators see the request body and not the HTTP headers. This is logged in FRICTION.md as a gap. A first-class field would be better.
 
@@ -135,21 +135,21 @@ Measured, partly. On Arbitrum Sepolia to Base Sepolia, 1 USDC was quoted and 10,
 
 A corridor's condition comes from the latest probe of each tier.
 
-| Condition | Rule |
-| --- | --- |
-| Fair | Every probed tier was quoted |
-| Cloudy | At least one tier was quoted and at least one was not |
-| Stormy | No tier was quoted |
-| Unknown | Never probed |
+| Condition | Rule                                                  |
+| --------- | ----------------------------------------------------- |
+| Fair      | Every probed tier was quoted                          |
+| Cloudy    | At least one tier was quoted and at least one was not |
+| Stormy    | No tier was quoted                                    |
+| Unknown   | Never probed                                          |
 
 The condition does not rank operators and does not depend on who quoted.
 
-| Alert | Fires when | Severity |
-| --- | --- | --- |
-| `prober_stale` | No tick finished within three intervals | Critical |
+| Alert            | Fires when                                                               | Severity |
+| ---------------- | ------------------------------------------------------------------------ | -------- |
+| `prober_stale`   | No tick finished within three intervals                                  | Critical |
 | `gateway_errors` | Discovery failed, or half or more of a tick's probes were gateway errors | Critical |
-| `quotes_lost` | A corridor tier was quoted on its previous probe and is not quoted now | Critical |
-| `slow_quotes` | Time to first quote is above `SLOW_QUOTE_MS` | Warning |
+| `quotes_lost`    | A corridor tier was quoted on its previous probe and is not quoted now   | Critical |
+| `slow_quotes`    | Time to first quote is above `SLOW_QUOTE_MS`                             | Warning  |
 
 `/api/v1/health` returns `503` when a critical alert is active. A monitor only needs an HTTP check on that path. The public page shows alerts but pages nobody.
 

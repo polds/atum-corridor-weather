@@ -1,0 +1,45 @@
+name: Doc friction
+description: An Atum doc gap, a confusing field or an API surprise. Accepted reports go into FRICTION.md.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        FRICTION.md logs every gap hit while building Corridor Weather, for the Atum docs team. Each item says what was expected, what happened, and what would have helped.
+  - type: input
+    id: where
+    attributes:
+      label: Doc page, endpoint or SDK call
+      placeholder: GET /v1/defaults, or prepareQuoteRequest
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: What the docs or the API led you to expect.
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: Happened
+      description: What you saw. Paste the response or the error.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround
+  - type: textarea
+    id: would-help
+    attributes:
+      label: Would help
+      description: The doc change or API change that would have prevented it.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: SDK version, gateway URL and date.
+      placeholder: "@atumlabs/payment-gateway-client 6.0.0, https://payment-gw.production-testnet.atum.xyz, 2026-11-22"

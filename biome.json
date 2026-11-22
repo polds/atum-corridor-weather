@@ -1,16 +1,25 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.6.8/schema.json",
-  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
-  "files": { "includes": ["**", "!test/fixtures", "!dist", "!worker-configuration.d.ts"] },
-  "formatter": { "enabled": true, "indentStyle": "tab", "lineWidth": 100 },
-  "linter": {
-    "enabled": true,
-    "rules": {
-      "recommended": true,
-      "suspicious": { "noExplicitAny": "error" },
-      "style": { "noNonNullAssertion": "error", "useImportType": "error" },
-      "correctness": { "noUnusedImports": "error", "noUnusedVariables": "error" }
-    }
-  },
-  "assist": { "actions": { "source": { "organizeImports": "on" } } }
+	"$schema": "https://biomejs.dev/schemas/2.6.8/schema.json",
+	"vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+	"files": {
+		"includes": [
+			"**",
+			"!test/fixtures",
+			"!dist",
+			"!worker-configuration.d.ts",
+			"!.claude",
+			"!docs/decisions.tsv"
+		]
+	},
+	"formatter": { "enabled": true, "indentStyle": "tab", "lineWidth": 100 },
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"suspicious": { "noExplicitAny": "error" },
+			"style": { "noNonNullAssertion": "error", "useImportType": "error" },
+			"correctness": { "noUnusedImports": "error", "noUnusedVariables": "error" }
+		}
+	},
+	"assist": { "actions": { "source": { "organizeImports": "on" } } }
 }
