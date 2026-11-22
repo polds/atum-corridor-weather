@@ -14,5 +14,5 @@
 		"skipLibCheck": true,
 		"noEmit": true
 	},
-	"include": ["src", "../src/domain/snapshot.ts", "../src/domain/types.ts"]
+	"include": ["src", "fixtures", "../src/domain/snapshot.ts", "../src/domain/types.ts"]
 }
