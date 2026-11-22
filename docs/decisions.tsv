@@ -6,3 +6,5 @@ ts	phase	decision	why	evidence	result
 2026-11-22T10:44:13Z	design	chose one Worker with D1 over a raw log in R2 plus a view store	one owner per piece of state and one row read per page view	docs/DESIGN.md Shape	open
 2026-11-22T10:44:13Z	design	kept operator addresses out of the public snapshot	publishing them is an unanswered legal question	src/domain/snapshot.ts	open
 2026-11-22T10:44:13Z	scaffold	switched from npm to pnpm	npm 10.9 crashes resolving vitest in this container, with or without the SDK	pnpm-lock.yaml	install works
+2026-11-22T10:47:06Z	build	split the build across three workers with disjoint paths and no commit rights	the prober, the dashboard and the CI files share only the two type files, which were written first	src/domain/types.ts, src/domain/snapshot.ts	open
+2026-11-22T10:47:06Z	build	skipped the arena bakeoff the feature playbook asks for	three parallel builders already run; a second set of competing builders was not worth the spend for a first version	none	open, reviewer may disagree
