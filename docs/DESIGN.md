@@ -89,6 +89,12 @@ The target list is every corridor at every tier, sorted by id. Slot `n` probes `
 
 The `request_id` of a probe is `cw1.{network}.{slotStart}.{corridorHash}.{tier}`. A retried cron run produces the same ids. The gateway then returns the original batch with `idempotent_replay: true` and does not broadcast to operators a second time. Store writes are upserts keyed by the same id.
 
+### Platform limits
+
+One probe makes about eight gateway calls: one create and about seven polls. A tick of 30 probes makes about 240 subrequests and runs for about two minutes. The Workers free plan allows 50 subrequests per invocation, so the default cadence needs the Workers Paid plan. On the free plan, set `PROBES_PER_TICK` to 5 or lower. These numbers are estimates from local runs, not measurements on Cloudflare.
+
+`/api/v1/health` returns `503` with `prober_stale` from a fresh deploy until the first tick finishes. Expect one red check after the first deploy.
+
 ## Answers to the open questions
 
 Answers marked "measured" come from three tagged testnet quote requests sent on 2026-11-22. Answers marked "needs a person" cannot be settled by code.
@@ -127,9 +133,9 @@ From the API reference, `requested_count - quotes - declines` is the number of o
 
 ### 6. Which amounts are representative without tripping liquidity declines on purpose?
 
-Measured, partly. On Arbitrum Sepolia to Base Sepolia, 1 USDC was quoted and 10,000 USDC was declined with `INSUFFICIENT_LIQUIDITY`. The testnet defaults are therefore 1, 25 and 250 whole tokens. They are configuration (`AMOUNT_TIERS`), given in whole tokens and converted with the decimals from `/v1/defaults`.
+Measured on one corridor. On Arbitrum Sepolia to Base Sepolia, 1, 25 and 100 USDC were each quoted at 2 bps. 250 USDC and 10,000 USDC were declined with `INSUFFICIENT_LIQUIDITY`. The testnet defaults are therefore 1, 25 and 100 whole tokens. They are configuration (`AMOUNT_TIERS`), given in whole tokens and converted with the decimals from `/v1/defaults`.
 
-**Decision needed.** The large tier is a guess between the two measured points. Operators know their testnet inventory and should set it.
+**Decision needed.** One corridor and one operator set these numbers. Operators know their testnet inventory and should confirm the large tier, or replace it.
 
 ## Conditions and alerts
 

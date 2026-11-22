@@ -248,7 +248,7 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
 
 7. Check that your monitor fired once.
 
-8. Restore `AMOUNT_TIERS` to `{"small":"1","typical":"25","large":"250"}` and keep the filter. Deploy from your machine. The alert compares the latest probe of a tier with the probe before it, so the large tier must be quoted again before health returns `200`. Without the filter, that corridor waits for its turn in the full sweep, about 4.6 hours.
+8. Restore `AMOUNT_TIERS` to `{"small":"1","typical":"25","large":"100"}` and keep the filter. Deploy from your machine. The alert compares the latest probe of a tier with the probe before it, so the large tier must be quoted again before health returns `200`. Without the filter, that corridor waits for its turn in the full sweep, about 4.6 hours.
 
 9. Wait until health returns `200`. Check that the monitor recovered.
 
