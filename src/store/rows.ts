@@ -173,6 +173,9 @@ export const tickRowSchema: z.ZodType<SnapshotTick, z.ZodTypeDef, unknown> = z
 		aborted: row.aborted_reason,
 	}));
 
+/** `MIN(slot_start)` of the current run of failing ticks; null when there is none. */
+export const errorRunRowSchema = z.object({ since: iso.nullable() });
+
 const alertSchema: z.ZodType<Alert, z.ZodTypeDef, unknown> = z.object({
 	kind: z.enum(["prober_stale", "gateway_errors", "quotes_lost", "slow_quotes"]),
 	severity: z.enum(["warning", "critical"]),

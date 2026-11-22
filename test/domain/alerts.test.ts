@@ -12,7 +12,8 @@ describe("alertsFor", () => {
 	it("is quiet for a fresh tick and healthy corridors", () => {
 		const alerts = alertsFor({
 			...base,
-			ticks: [freshTick],
+			lastTick: freshTick,
+			errorRunStart: null,
 			tiers: [
 				{
 					corridorId: A,
@@ -27,7 +28,8 @@ describe("alertsFor", () => {
 	it("raises quotes_lost when the previous probe of a tier was quoted and the latest is not", () => {
 		const alerts = alertsFor({
 			...base,
-			ticks: [freshTick],
+			lastTick: freshTick,
+			errorRunStart: null,
 			tiers: [
 				{
 					corridorId: A,
@@ -61,7 +63,8 @@ describe("alertsFor", () => {
 	it("warns slow_quotes above the threshold and not at it", () => {
 		const alerts = alertsFor({
 			...base,
-			ticks: [freshTick],
+			lastTick: freshTick,
+			errorRunStart: null,
 			tiers: [
 				{
 					corridorId: A,
@@ -80,14 +83,11 @@ describe("alertsFor", () => {
 		]);
 	});
 
-	it("raises gateway_errors from the first of the erroring ticks in a row", () => {
+	it("raises gateway_errors since the start of the failing run", () => {
 		const alerts = alertsFor({
 			...base,
-			ticks: [
-				tick("2026-11-22T11:55:00.000Z", { completed: 4, gatewayErrors: 2 }),
-				tick("2026-11-22T11:50:00.000Z", { aborted: "defaults_unavailable", completed: 0 }),
-				tick("2026-11-22T11:45:00.000Z", { completed: 4, gatewayErrors: 1 }),
-			],
+			lastTick: tick("2026-11-22T11:55:00.000Z", { completed: 4, gatewayErrors: 2 }),
+			errorRunStart: iso("2026-11-22T11:50:00.000Z"),
 			tiers: [],
 		});
 		expect(alerts).toStrictEqual([
@@ -104,7 +104,8 @@ describe("alertsFor", () => {
 	it("raises gateway_errors when discovery failed and not when fewer than half failed", () => {
 		const failed = alertsFor({
 			...base,
-			ticks: [tick("2026-11-22T11:55:00.000Z", { aborted: "defaults_unavailable", completed: 0 })],
+			lastTick: tick("2026-11-22T11:55:00.000Z", { aborted: "defaults_unavailable", completed: 0 }),
+			errorRunStart: iso("2026-11-22T11:55:00.000Z"),
 			tiers: [],
 		});
 		expect(failed.map((alert) => alert.message)).toStrictEqual([
@@ -112,7 +113,8 @@ describe("alertsFor", () => {
 		]);
 		const fine = alertsFor({
 			...base,
-			ticks: [tick("2026-11-22T11:55:00.000Z", { completed: 5, gatewayErrors: 2 })],
+			lastTick: tick("2026-11-22T11:55:00.000Z", { completed: 5, gatewayErrors: 2 }),
+			errorRunStart: null,
 			tiers: [],
 		});
 		expect(fine).toStrictEqual([]);
@@ -121,7 +123,8 @@ describe("alertsFor", () => {
 	it("orders critical kinds before warnings", () => {
 		const alerts = alertsFor({
 			...base,
-			ticks: [],
+			lastTick: null,
+			errorRunStart: null,
 			tiers: [
 				{
 					corridorId: A,

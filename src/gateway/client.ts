@@ -25,6 +25,9 @@ const ALLOWED_ROUTES: readonly { readonly method: GatewayMethod; readonly path: 
 	{ method: "GET", path: /^\/v1\/payments\/quote-requests\/[A-Za-z0-9._-]{1,128}$/ },
 ];
 
+/** The largest response body the client reads. A poll answer is a few KiB. */
+const MAX_RESPONSE_BYTES = 256 * 1024;
+
 export type GatewayFailure =
 	| { readonly kind: "refused"; readonly message: string }
 	| { readonly kind: "transport"; readonly message: string }
@@ -82,6 +85,29 @@ function refusal(request: GatewayRequest, url: URL, baseUrl: string): string | n
 	return allowed ? null : `${request.method} ${url.origin}${url.pathname}`;
 }
 
+/** The body as text, or null when it is longer than `MAX_RESPONSE_BYTES`. Stops reading at the cap. */
+async function readCapped(response: Response): Promise<string | null> {
+	if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
+		await response.body?.cancel();
+		return null;
+	}
+	if (response.body === null) return "";
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let text = "";
+	let bytes = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) return text + decoder.decode();
+		bytes += value.byteLength;
+		if (bytes > MAX_RESPONSE_BYTES) {
+			await reader.cancel();
+			return null;
+		}
+		text += decoder.decode(value, { stream: true });
+	}
+}
+
 function parseBody(text: string): unknown {
 	if (text === "") return null;
 	try {
@@ -93,6 +119,10 @@ function parseBody(text: string): unknown {
 
 function errorText(error: unknown): string {
 	return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+function isRedirect(status: number): boolean {
+	return status >= 300 && status < 400;
 }
 
 function isTimeout(error: unknown): boolean {
@@ -131,10 +161,27 @@ export function createGatewayClient(options: GatewayClientOptions): GatewayClien
 					...(request.body === undefined ? {} : { "content-type": "application/json" }),
 				},
 				...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+				// A redirect would reach a URL the allowlist never checked.
+				redirect: "manual",
 				signal: AbortSignal.timeout(options.timeoutMs),
 			});
 			status = response.status;
-			const responseBody = parseBody(await response.text());
+			const text = await readCapped(response);
+			if (text === null) {
+				const message = `response too large: over ${MAX_RESPONSE_BYTES} bytes, not kept`;
+				return {
+					ok: false,
+					failure: { kind: "invalid_response", status, message },
+					exchange: {
+						...base,
+						status,
+						latencyMs: options.now() - startedMs,
+						responseBody: null,
+						error: message,
+					},
+				};
+			}
+			const responseBody = parseBody(text);
 			const exchange: RawExchange = {
 				...base,
 				status,
@@ -143,7 +190,9 @@ export function createGatewayClient(options: GatewayClientOptions): GatewayClien
 				error: null,
 			};
 			if (response.ok) return { ok: true, value: responseBody, exchange };
-			const { code, message } = describeError(responseBody);
+			const { code, message } = isRedirect(status)
+				? { code: null, message: `redirect to ${response.headers.get("location")} not followed` }
+				: describeError(responseBody);
 			return { ok: false, failure: { kind: "http", status, code, message }, exchange };
 		} catch (error) {
 			const message = errorText(error);

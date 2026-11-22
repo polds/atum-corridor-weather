@@ -13,8 +13,12 @@ export interface AlertInput {
 	readonly nowMs: number;
 	readonly tickIntervalMinutes: number;
 	readonly slowQuoteMs: number;
-	/** Most recent first. */
-	readonly ticks: readonly SnapshotTick[];
+	readonly lastTick: SnapshotTick | null;
+	/**
+	 * Slot start of the first failing tick after the last healthy one, or null
+	 * when the last tick is healthy. The store reads it with the rule of `tickErrored`.
+	 */
+	readonly errorRunStart: IsoTimestamp | null;
 	readonly tiers: readonly TierHistory[];
 }
 
@@ -52,17 +56,17 @@ export function staleAlert(params: {
 	};
 }
 
+/** A failing tick. `ERRORED_TICK` in `src/store/store.ts` is the same rule in SQL. */
 function tickErrored(tick: SnapshotTick): boolean {
 	if (tick.aborted === "defaults_unavailable") return true;
 	return tick.completed > 0 && 2 * tick.gatewayErrors >= tick.completed;
 }
 
-function gatewayErrorsAlert(ticks: readonly SnapshotTick[]): Alert | null {
-	const [latest] = ticks;
-	if (latest === undefined || !tickErrored(latest)) return null;
-	const firstIndexOk = ticks.findIndex((tick) => !tickErrored(tick));
-	const run = firstIndexOk === -1 ? ticks : ticks.slice(0, firstIndexOk);
-	const oldest = run[run.length - 1] ?? latest;
+function gatewayErrorsAlert(
+	latest: SnapshotTick | null,
+	errorRunStart: IsoTimestamp | null,
+): Alert | null {
+	if (latest === null || !tickErrored(latest)) return null;
 	const message =
 		latest.aborted === "defaults_unavailable"
 			? "The last tick could not read /v1/defaults."
@@ -72,7 +76,7 @@ function gatewayErrorsAlert(ticks: readonly SnapshotTick[]): Alert | null {
 		severity: "critical",
 		corridorId: null,
 		message,
-		since: oldest.slotStart,
+		since: errorRunStart ?? latest.slotStart,
 	};
 }
 
@@ -105,9 +109,9 @@ export function alertsFor(input: AlertInput): Alert[] {
 	const stale = staleAlert({
 		nowMs: input.nowMs,
 		tickIntervalMinutes: input.tickIntervalMinutes,
-		lastTickFinishedAt: input.ticks[0]?.finishedAt ?? null,
+		lastTickFinishedAt: input.lastTick?.finishedAt ?? null,
 	});
-	const errors = gatewayErrorsAlert(input.ticks);
+	const errors = gatewayErrorsAlert(input.lastTick, input.errorRunStart);
 	return [
 		...(stale === null ? [] : [stale]),
 		...(errors === null ? [] : [errors]),

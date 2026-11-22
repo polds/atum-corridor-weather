@@ -98,7 +98,8 @@ describe("buildSnapshot", () => {
 				previous: null,
 			},
 		],
-		ticks: [tick("2026-11-22T11:55:00.000Z"), tick("2026-11-22T11:50:00.000Z")],
+		lastTick: tick("2026-11-22T11:55:00.000Z"),
+		errorRunStart: null,
 	});
 
 	it("reports the cadence of a full sweep", () => {
@@ -174,7 +175,8 @@ describe("buildHealth", () => {
 				previous: null,
 			},
 		],
-		ticks: [tick("2026-11-22T11:55:00.000Z")],
+		lastTick: tick("2026-11-22T11:55:00.000Z"),
+		errorRunStart: null,
 	});
 
 	it("is ok with only a warning active", () => {

@@ -5,6 +5,29 @@ import { AMOUNT_TIERS, type Network } from "../domain/types";
 /** The value `MAINNET_ACK` must hold before `NETWORK=mainnet` is accepted. */
 export const MAINNET_ACK = "cadence-and-publishing-agreed";
 
+/** The only remote gateway each network may use. */
+const GATEWAY_ORIGINS: Readonly<Record<Network, string>> = {
+	testnet: "https://payment-gw.production-testnet.atum.xyz",
+	mainnet: "https://payment-gw.production-mainnet.atum.xyz",
+};
+
+/** Hosts of a local stand-in gateway, such as `test/e2e/stub-gateway.mjs`. */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/**
+ * `GATEWAY_URL` is the network's gateway origin or a plain-HTTP loopback origin,
+ * so a testnet label can never point at another network's gateway.
+ */
+function isGatewayFor(network: Network, gatewayUrl: string): boolean {
+	if (!URL.canParse(gatewayUrl)) return false;
+	const url = new URL(gatewayUrl);
+	if (`${url.origin}/` !== url.href) return false;
+	return (
+		url.origin === GATEWAY_ORIGINS[network] ||
+		(url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname))
+	);
+}
+
 export interface Config {
 	readonly network: Network;
 	readonly gatewayUrl: string;
@@ -41,7 +64,15 @@ const httpUrl = z
 const wholeAmount = z
 	.string()
 	.regex(/^\d+(\.\d+)?$/, "must be a whole-token decimal such as 1 or 0.5")
-	.refine((value) => /[1-9]/.test(value), "must be more than zero");
+	.refine((value) => /[1-9]/.test(value), "must be more than zero")
+	.refine(
+		(value) => (value.split(".")[1] ?? "").replace(/0+$/, "").length <= 18,
+		"must have at most 18 fractional digits",
+	)
+	.refine(
+		(value) => (value.split(".")[0] ?? "").replace(/^0+/, "").length <= 24,
+		"must have at most 24 integer digits",
+	);
 
 const tierAmounts = z
 	.string()
@@ -76,7 +107,8 @@ const envSchema = z
 	.object({
 		NETWORK: z.enum(["testnet", "mainnet"]),
 		MAINNET_ACK: z.string().default(""),
-		GATEWAY_URL: httpUrl,
+		// Checked against NETWORK below.
+		GATEWAY_URL: z.string(),
 		REPOSITORY_URL: httpUrl,
 		PROBE_ENABLED: z.enum(["true", "false"]).transform((value) => value === "true"),
 		TICK_INTERVAL_MINUTES: integer(1, 1440),
@@ -89,6 +121,13 @@ const envSchema = z
 		RAW_RETENTION_DAYS: integer(0, 3650).default("14"),
 	})
 	.superRefine((env, context) => {
+		if (!isGatewayFor(env.NETWORK, env.GATEWAY_URL)) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["GATEWAY_URL"],
+				message: `NETWORK=${env.NETWORK} needs GATEWAY_URL=${GATEWAY_ORIGINS[env.NETWORK]}, or a loopback origin such as http://127.0.0.1:8789 for a local gateway`,
+			});
+		}
 		if (env.NETWORK === "mainnet" && env.MAINNET_ACK !== MAINNET_ACK) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,

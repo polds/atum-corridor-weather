@@ -6,12 +6,14 @@ const WHOLE_AMOUNT = /^(\d+)(?:\.(\d+))?$/;
 /**
  * A whole-token decimal string ("1", "0.5", "250") in the token's smallest
  * unit. Null when the text is not a plain non-negative decimal or has more
- * fractional digits than the token has decimals.
+ * significant fractional digits than the token has decimals.
  */
 export function toAtomicAmount(whole: string, decimals: number): AtomicAmount | null {
 	const match = WHOLE_AMOUNT.exec(whole);
 	if (match === null || !Number.isInteger(decimals) || decimals < 0) return null;
-	const [, integerPart = "", fraction = ""] = match;
+	const [, integerPart = "", digits = ""] = match;
+	// "1.50" needs one decimal, not two.
+	const fraction = digits.replace(/0+$/, "");
 	if (fraction.length > decimals) return null;
 	const atomic = (
 		BigInt(integerPart) * 10n ** BigInt(decimals) +

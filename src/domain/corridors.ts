@@ -45,9 +45,14 @@ function isProbeable(chain: ListedChain): boolean {
 	);
 }
 
+/** EVM addresses are case-insensitive, so the SDK and the asset id use lower case. Base58 is not. */
+function canonicalAddress(namespace: ChainNamespace, address: string): string {
+	return namespace === "eip155" ? address.toLowerCase() : address;
+}
+
 function assetsOf(chainId: ChainId, namespace: ChainNamespace, chain: ListedChain): Asset[] {
 	return chain.tokens.flatMap((token) => {
-		const id = `${chainId}/${TOKEN_STANDARD[namespace]}:${token.address}`;
+		const id = `${chainId}/${TOKEN_STANDARD[namespace]}:${canonicalAddress(namespace, token.address)}`;
 		if (!isAssetId(id)) return [];
 		return [{ id, chainId, namespace, symbol: token.symbol, decimals: token.decimals }];
 	});

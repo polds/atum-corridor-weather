@@ -1,5 +1,6 @@
--- Corridor Weather store. Every write is an upsert keyed by a natural key, so a
--- re-run of the same tick slot converges to the same rows.
+-- Corridor Weather store. Ticks and probes are written once, keyed by a natural
+-- key: the first write wins, so a re-run of the same tick slot leaves the rows as
+-- they were. Corridors and the snapshot are upserted.
 
 CREATE TABLE ticks (
 	network TEXT NOT NULL,
@@ -78,7 +79,8 @@ CREATE TABLE probe_declines (
 	PRIMARY KEY (probe_id, ordinal)
 );
 
--- The request body and every HTTP exchange of a probe, verbatim. Operator
+-- The request body and every HTTP exchange of a probe. Response bodies are cut
+-- when one probe's exchanges pass the raw budget in src/store/store.ts. Operator
 -- addresses live here and nowhere public.
 CREATE TABLE probe_raw (
 	probe_id TEXT PRIMARY KEY,

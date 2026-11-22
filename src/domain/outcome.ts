@@ -13,8 +13,8 @@ export interface SeenQuote {
 	readonly settlerAddress: string;
 	readonly sourceAmount: AtomicAmount;
 	readonly awardDeadline: IsoTimestamp;
-	/** Epoch ms of the poll response that first listed this quote. */
-	readonly firstSeenMs: number;
+	/** Epoch ms of the poll response that first listed this quote. Null when it was not observed arriving. */
+	readonly firstSeenMs: number | null;
 }
 
 /** The last status the probe read, with the quotes it lists. */
@@ -43,7 +43,8 @@ function observe(target: ProbeTarget, quote: SeenQuote): QuoteObservation {
 			destinationDecimals: destination.decimals,
 			destinationSymbol: destination.symbol,
 		}),
-		priceHoldMs: Date.parse(quote.awardDeadline) - quote.firstSeenMs,
+		priceHoldMs:
+			quote.firstSeenMs === null ? null : Date.parse(quote.awardDeadline) - quote.firstSeenMs,
 	};
 }
 

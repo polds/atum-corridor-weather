@@ -20,6 +20,7 @@ import {
 	type AtomicAmount,
 	type Corridor,
 	type CorridorId,
+	type IsoTimestamp,
 	type Network,
 	type ProbeRecord,
 } from "./types";
@@ -60,7 +61,9 @@ export function readingOf(probe: ProbeRecord): TierReading {
 		worstSpreadBps: maxOf(spreads),
 		firstQuoteMs: probe.timings.firstQuoteMs,
 		readyMs: probe.timings.readyMs,
-		minPriceHoldMs: minOf(quotes.map((quote) => quote.priceHoldMs)),
+		minPriceHoldMs: minOf(
+			quotes.flatMap((quote) => (quote.priceHoldMs === null ? [] : [quote.priceHoldMs])),
+		),
 		declines: declines.map((decline) => ({
 			reason: decline.reason,
 			retryClassification: decline.retryClassification,
@@ -79,8 +82,9 @@ export interface SnapshotInput {
 	/** The corridors of the latest successful discovery. */
 	readonly corridors: readonly Corridor[];
 	readonly tiers: readonly TierHistory[];
-	/** Most recent first. */
-	readonly ticks: readonly SnapshotTick[];
+	readonly lastTick: SnapshotTick | null;
+	/** Slot start of the current run of failing ticks, or null. See `AlertInput`. */
+	readonly errorRunStart: IsoTimestamp | null;
 }
 
 function snapshotAsset(asset: Asset): SnapshotAsset {
@@ -131,7 +135,7 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
 				tiers,
 			};
 		});
-	const [lastTick = null] = input.ticks;
+	const { lastTick } = input;
 	return {
 		schemaVersion: SNAPSHOT_SCHEMA_VERSION,
 		network: input.network,
@@ -152,7 +156,8 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
 			nowMs: input.nowMs,
 			tickIntervalMinutes: input.tickIntervalMinutes,
 			slowQuoteMs: input.slowQuoteMs,
-			ticks: input.ticks,
+			lastTick,
+			errorRunStart: input.errorRunStart,
 			tiers: input.tiers,
 		}),
 	};

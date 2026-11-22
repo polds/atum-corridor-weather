@@ -52,6 +52,33 @@ describe("discoverCorridors", () => {
 		});
 	});
 
+	it("treats EVM token addresses that differ only in case as one asset", () => {
+		const listing: DefaultsListing = {
+			"eip155:1": chain({
+				tokens: [
+					{ address: "0xAbCd", decimals: 6, symbol: "USDC" },
+					{ address: "0xabcd", decimals: 6, symbol: "USDC" },
+				],
+			}),
+			"tron:shasta": chain({
+				tokens: [
+					{ address: "TAbc", decimals: 6, symbol: "USDT" },
+					{ address: "Tabc", decimals: 6, symbol: "USDT" },
+				],
+			}),
+		};
+		const { assets, corridors } = discoverCorridors(listing, null);
+		expect(assets.map((asset) => asset.id)).toStrictEqual([
+			"eip155:1/erc20:0xabcd",
+			"tron:shasta/trc20:TAbc",
+			"tron:shasta/trc20:Tabc",
+		]);
+		expect(corridors).toHaveLength(3 * 2);
+		expect(corridors.every((corridor) => corridor.source.id !== corridor.destination.id)).toBe(
+			true,
+		);
+	});
+
 	it("skips chains it cannot probe instead of failing", () => {
 		const listing: DefaultsListing = {
 			"eip155:1": chain({}),

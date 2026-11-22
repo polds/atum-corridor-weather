@@ -131,6 +131,53 @@ describe("results", () => {
 		});
 	});
 
+	it("never follows a redirect and records it as an http failure", async () => {
+		const inits: (RequestInit | undefined)[] = [];
+		const gateway = createGatewayClient({
+			baseUrl: "https://gateway.test",
+			userAgent: "corridor-weather/test",
+			fetch: async (_input, init) => {
+				inits.push(init);
+				return new Response(null, { status: 307, headers: { location: "/v1/payments/awards" } });
+			},
+			now: () => START,
+			timeoutMs: 1000,
+		});
+		const result = await gateway.getDefaults();
+		expect(inits.map((init) => init?.redirect)).toStrictEqual(["manual"]);
+		expect(result).toMatchObject({
+			ok: false,
+			failure: {
+				kind: "http",
+				status: 307,
+				message: "redirect to /v1/payments/awards not followed",
+			},
+			exchange: { path: "/v1/defaults", status: 307 },
+		});
+	});
+
+	it("refuses a body over 256 KiB, declared or streamed, and keeps none of it", async () => {
+		const declared = client(
+			() => new Response("{}", { status: 200, headers: { "content-length": "262145" } }),
+		);
+		const streamed = client(() => jsonResponse(200, { pad: "x".repeat(262_144) }));
+		for (const { gateway } of [declared, streamed]) {
+			expect(await gateway.getDefaults()).toMatchObject({
+				ok: false,
+				failure: {
+					kind: "invalid_response",
+					status: 200,
+					message: expect.stringMatching(/^response too large/),
+				},
+				exchange: {
+					status: 200,
+					responseBody: null,
+					error: expect.stringMatching(/^response too large/),
+				},
+			});
+		}
+	});
+
 	it("gives up on a call that outlives its timeout", async () => {
 		const { gateway } = client(() => new Promise<Response>(() => {}), 20);
 		const result = await gateway.getDefaults();

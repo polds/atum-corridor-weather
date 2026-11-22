@@ -93,9 +93,10 @@ function buildErrorMessage(error: QuoteRequestError): string {
 	}
 }
 
+/** `firstSeenMs` is null for a replayed batch, whose quotes this run did not see arrive. */
 function finalStatus(
 	status: StatusResponse,
-	firstSeenMs: ReadonlyMap<string, number>,
+	firstSeenMs: ReadonlyMap<string, number> | null,
 ): FinalStatus {
 	return {
 		status: status.status,
@@ -104,7 +105,7 @@ function finalStatus(
 			settlerAddress: quote.fulfillment_quote.settler_address,
 			sourceAmount: quote.fulfillment_quote.source_amount,
 			awardDeadline: quote.fulfillment_quote.award_deadline,
-			firstSeenMs: firstSeenMs.get(quote.quote_id) ?? 0,
+			firstSeenMs: firstSeenMs?.get(quote.quote_id) ?? null,
 		})),
 		declines:
 			status.decline_summary?.map((decline) => ({
@@ -188,9 +189,12 @@ export async function runProbe(plan: ProbePlan, deps: ProbeDeps): Promise<ProbeR
 		if (firstQuoteMs === null && status.quotes.length > 0) firstQuoteMs = seenMs - sentMs;
 		if (readyMs === null && status.status === "ready") readyMs = seenMs - sentMs;
 		if (status.status !== "collecting" || seenMs >= budgetEndMs) {
+			// A replayed batch was opened by an earlier run, so this run's clock measured
+			// none of its timings.
+			const replay = batch.idempotentReplay;
 			return record(
-				classifyOutcome(plan.target, finalStatus(status, firstSeenMs)),
-				{ createLatencyMs, firstQuoteMs, readyMs },
+				classifyOutcome(plan.target, finalStatus(status, replay ? null : firstSeenMs)),
+				replay ? { ...noTimings, createLatencyMs } : { createLatencyMs, firstQuoteMs, readyMs },
 				batch,
 			);
 		}

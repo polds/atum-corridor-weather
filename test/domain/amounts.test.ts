@@ -11,6 +11,8 @@ describe("toAtomicAmount", () => {
 		["1.5", 18, "1500000000000000000"],
 		["7", 0, "7"],
 		["00.50", 2, "50"],
+		["1.50", 1, "15"],
+		["2.000", 0, "2"],
 	])("converts %s whole tokens at %i decimals to %s", (whole, decimals, atomic) => {
 		expect(toAtomicAmount(whole, decimals)).toBe(atomic);
 	});

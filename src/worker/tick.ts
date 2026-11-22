@@ -11,7 +11,7 @@ import {
 	slotAt,
 } from "../domain/schedule";
 import type { Snapshot } from "../domain/snapshot";
-import type { ProbeRecord, TickRecord, TickSlot } from "../domain/types";
+import { AMOUNT_TIERS, type ProbeRecord, type TickRecord, type TickSlot } from "../domain/types";
 import type { GatewayClient, GatewayFailure } from "../gateway/client";
 import { isRateLimited, runProbe } from "../gateway/probe";
 import type { Store } from "../store/store";
@@ -26,7 +26,7 @@ export interface TickDeps {
 	readonly sleep: (ms: number) => Promise<void>;
 }
 
-type TickRun = Pick<TickRecord, "corridors" | "planned" | "probes" | "aborted">;
+type TickRun = Pick<TickRecord, "corridors" | "planned" | "unrepresentable" | "probes" | "aborted">;
 
 const DAY_MS = 86_400_000;
 
@@ -56,6 +56,7 @@ async function probeSlot(deps: TickDeps, slot: TickSlot): Promise<TickRun> {
 		return {
 			corridors: [],
 			planned: 0,
+			unrepresentable: 0,
 			probes: [],
 			aborted: { reason: "disabled", message: "PROBE_ENABLED is false" },
 		};
@@ -65,12 +66,37 @@ async function probeSlot(deps: TickDeps, slot: TickSlot): Promise<TickRun> {
 		return {
 			corridors: [],
 			planned: 0,
+			unrepresentable: 0,
 			probes: [],
 			aborted: { reason: "defaults_unavailable", message: describeFailure(defaults.failure) },
 		};
 	}
+	// A listing with no corridor at all is a broken answer, not an empty network.
+	if (discoverCorridors(defaults.value, null).corridors.length === 0) {
+		const chains = Object.keys(defaults.value).length;
+		return {
+			corridors: [],
+			planned: 0,
+			unrepresentable: 0,
+			probes: [],
+			aborted: {
+				reason: "defaults_unavailable",
+				message: `/v1/defaults listed no usable chain: ${chains} chains, 0 corridors`,
+			},
+		};
+	}
 	const { corridors } = discoverCorridors(defaults.value, config.corridorFilter);
-	const batch = batchFor(slot, probeTargets(corridors, config.tierAmounts), config.probesPerTick);
+	if (corridors.length === 0) {
+		console.warn({
+			event: "corridor_filter_matched_nothing",
+			slot: slot.start,
+			filter: String(config.corridorFilter),
+		});
+	}
+	const targets = probeTargets(corridors, config.tierAmounts);
+	const unrepresentable =
+		corridors.length * Object.keys(config.tierAmounts).length - targets.length;
+	const batch = batchFor(slot, targets, config.probesPerTick);
 	const probes: ProbeRecord[] = [];
 	for (const target of batch) {
 		const corridorDigest = await sha256Hex(target.corridor.id);
@@ -95,6 +121,7 @@ async function probeSlot(deps: TickDeps, slot: TickSlot): Promise<TickRun> {
 			return {
 				corridors,
 				planned: batch.length,
+				unrepresentable,
 				probes,
 				aborted: {
 					reason: "rate_limited",
@@ -103,7 +130,7 @@ async function probeSlot(deps: TickDeps, slot: TickSlot): Promise<TickRun> {
 			};
 		}
 	}
-	return { corridors, planned: batch.length, probes, aborted: null };
+	return { corridors, planned: batch.length, unrepresentable, probes, aborted: null };
 }
 
 /** Rebuilds the public snapshot from the store and stores it. */
@@ -111,7 +138,10 @@ export async function publishSnapshot(
 	deps: Pick<TickDeps, "config" | "store" | "now">,
 ): Promise<Snapshot> {
 	const { config } = deps;
-	const source = await deps.store.readSnapshotSource(config.network);
+	const source = await deps.store.readSnapshotSource(
+		config.network,
+		AMOUNT_TIERS.filter((tier) => config.tierAmounts[tier] !== undefined),
+	);
 	const snapshot = buildSnapshot({
 		network: config.network,
 		nowMs: deps.now(),

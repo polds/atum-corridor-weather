@@ -31,7 +31,7 @@ async function runScheduled(overrides: Readonly<Record<string, string>>): Promis
 	const ctx = createExecutionContext();
 	worker.scheduled(
 		createScheduledController({ scheduledTime: Date.now(), cron: "*/5 * * * *" }),
-		{ ...env, GATEWAY_URL: "https://gateway.test", ...overrides },
+		{ ...env, GATEWAY_URL: "http://127.0.0.1:8789", ...overrides },
 		ctx,
 	);
 	await waitOnExecutionContext(ctx);
@@ -40,12 +40,16 @@ async function runScheduled(overrides: Readonly<Record<string, string>>): Promis
 
 describe("scheduled handler", () => {
 	it("runs one tick against the configured gateway and publishes", async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 		const sent = await runScheduled(ONE_TARGET);
 		expect(sent.map((request) => `${request.method} ${new URL(request.url).host}`)).toStrictEqual([
-			"GET gateway.test",
-			"POST gateway.test",
-			"GET gateway.test",
+			"GET 127.0.0.1:8789",
+			"POST 127.0.0.1:8789",
+			"GET 127.0.0.1:8789",
 		]);
+		expect(info).toHaveBeenCalledWith(
+			expect.objectContaining({ event: "tick", planned: 1, unrepresentable: 0 }),
+		);
 		expect(sent[1]?.headers.get("user-agent")).toBe(
 			"corridor-weather/0.1.0 (+https://github.com/polds/atum-corridor-weather; synthetic probe)",
 		);

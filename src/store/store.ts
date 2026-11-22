@@ -2,32 +2,45 @@ import type { TierHistory } from "../domain/alerts";
 import { compareText } from "../domain/brands";
 import { readingOf } from "../domain/publish";
 import type { Snapshot, SnapshotTick, TierReading } from "../domain/snapshot";
-import {
-	AMOUNT_TIERS,
-	type Corridor,
-	type CorridorId,
-	type IsoTimestamp,
-	type Network,
-	type ProbeRecord,
-	type TickRecord,
+import type {
+	AmountTier,
+	Corridor,
+	CorridorId,
+	IsoTimestamp,
+	Network,
+	ProbeRecord,
+	RawExchange,
+	TickRecord,
 } from "../domain/types";
-import { corridorRowSchema, probeRowSchema, snapshotRowSchema, tickRowSchema } from "./rows";
+import {
+	corridorRowSchema,
+	errorRunRowSchema,
+	probeRowSchema,
+	snapshotRowSchema,
+	tickRowSchema,
+} from "./rows";
 
-/** What the snapshot builder reads: the current corridors, their tier readings, and recent ticks. */
+/** What the snapshot builder reads: the current corridors, their tier readings, and the last tick. */
 export interface SnapshotSource {
 	readonly corridors: readonly Corridor[];
 	readonly tiers: readonly TierHistory[];
-	/** Most recent first. */
-	readonly ticks: readonly SnapshotTick[];
+	readonly lastTick: SnapshotTick | null;
+	/** Slot start of the first failing tick after the last healthy one. Null when the last tick is healthy. */
+	readonly errorRunStart: IsoTimestamp | null;
 }
 
 export interface Store {
-	/** Upserts the tick, its corridors and its probes in one batch. */
+	/**
+	 * Stores the tick, its corridors and its probes in one batch. A tick or probe
+	 * already stored under the same key is kept as first written; corridors are
+	 * upserted.
+	 */
 	saveTick(
 		tick: TickRecord,
 		options: { readonly dropRawBefore: IsoTimestamp | null },
 	): Promise<void>;
-	readSnapshotSource(network: Network): Promise<SnapshotSource>;
+	/** Readings of `tiers` only, so a tier removed from the config leaves the snapshot. */
+	readSnapshotSource(network: Network, tiers: readonly AmountTier[]): Promise<SnapshotSource>;
 	saveSnapshot(snapshot: Snapshot): Promise<void>;
 	/** The published snapshot exactly as stored. */
 	readSnapshotJson(network: Network): Promise<string | null>;
@@ -41,11 +54,14 @@ export interface Store {
 	): Promise<TierReading[]>;
 }
 
-/** Recent ticks kept in view for the start time of a `gateway_errors` alert. */
-const RECENT_TICKS = 50;
-
 /** Each bound JSON parameter stays well under D1's 2 MB value limit. */
 const MAX_PARAMETER_BYTES = 512 * 1024;
+
+/**
+ * The most `probe_raw.raw_json` holds for one probe. JSON string escaping can double
+ * it inside the bound parameter, and twice this is still under D1's 2,000,000-byte limit.
+ */
+const RAW_BUDGET_BYTES = 900 * 1024;
 
 type Row = Readonly<Record<string, string | number | null>>;
 
@@ -127,9 +143,10 @@ function assignments(columns: readonly string[], conflict: readonly string[]): s
 
 /**
  * One `INSERT ... SELECT FROM json_each(?)` per chunk of rows, so a tick costs a
- * handful of D1 statements however many rows it writes.
+ * handful of D1 statements however many rows it writes. Without `update`, a row
+ * whose key already exists is left as it is: the first write wins.
  */
-function bulkUpsert<Columns extends readonly string[]>(
+function bulkInsert<Columns extends readonly string[]>(
 	db: D1Database,
 	params: {
 		readonly table: string;
@@ -140,8 +157,8 @@ function bulkUpsert<Columns extends readonly string[]>(
 	},
 ): D1PreparedStatement[] {
 	const select = params.columns.map((column) => `json_extract(value, '$.${column}')`).join(", ");
-	const update = params.update ?? assignments(params.columns, params.conflict);
-	const sql = `INSERT INTO ${params.table} (${params.columns.join(", ")}) SELECT ${select} FROM json_each(?1) WHERE true ON CONFLICT (${params.conflict.join(", ")}) DO UPDATE SET ${update}`;
+	const action = params.update === undefined ? "DO NOTHING" : `DO UPDATE SET ${params.update}`;
+	const sql = `INSERT INTO ${params.table} (${params.columns.join(", ")}) SELECT ${select} FROM json_each(?1) WHERE true ON CONFLICT (${params.conflict.join(", ")}) ${action}`;
 	return chunkBySize(params.rows).map((json) => db.prepare(sql).bind(json));
 }
 
@@ -215,13 +232,42 @@ function declineRows(probe: ProbeRecord): RowOf<typeof DECLINE_COLUMNS>[] {
 	}));
 }
 
-function rawRow(probe: ProbeRecord): RowOf<typeof RAW_COLUMNS> {
-	const created = probe.raw.find((exchange) => exchange.method === "POST");
+function byteLength(text: string): number {
+	return new TextEncoder().encode(text).byteLength;
+}
+
+/** The exchange with its response body replaced by a marker that keeps the body's size. */
+function truncated(exchange: RawExchange): RawExchange {
+	if (exchange.responseBody === null) return exchange;
 	return {
-		probe_id: probe.id,
-		created_at: probe.startedAt,
-		raw_json: JSON.stringify({ requestBody: created?.requestBody ?? null, exchanges: probe.raw }),
+		...exchange,
+		responseBody: { truncated: true, bytes: byteLength(JSON.stringify(exchange.responseBody)) },
 	};
+}
+
+/**
+ * The probe's raw exchanges within `RAW_BUDGET_BYTES`. Over budget, the response
+ * bodies between the first and the last exchange are cut; if that is not
+ * enough, those two are cut as well.
+ */
+function rawJson(probe: ProbeRecord): string {
+	const created = probe.raw.find((exchange) => exchange.method === "POST");
+	const text = (exchanges: readonly RawExchange[]) =>
+		JSON.stringify({ requestBody: created?.requestBody ?? null, exchanges });
+	const whole = text(probe.raw);
+	if (byteLength(whole) <= RAW_BUDGET_BYTES) return whole;
+	const last = probe.raw.length - 1;
+	const ends = text(
+		probe.raw.map((exchange, index) =>
+			index === 0 || index === last ? exchange : truncated(exchange),
+		),
+	);
+	if (byteLength(ends) <= RAW_BUDGET_BYTES) return ends;
+	return text(probe.raw.map(truncated));
+}
+
+function rawRow(probe: ProbeRecord): RowOf<typeof RAW_COLUMNS> {
+	return { probe_id: probe.id, created_at: probe.startedAt, raw_json: rawJson(probe) };
 }
 
 /** The corridors of the latest successful discovery. */
@@ -241,13 +287,21 @@ const LATEST_TWO = `WITH current AS (${CURRENT_CORRIDORS})
 		WHERE q.network = ?1 AND q.corridor_id = c.id AND q.tier = t.value
 		ORDER BY q.slot_start DESC LIMIT 2)`;
 
+/** A failing tick: `tickErrored` in `src/domain/alerts.ts`, in SQL. */
+const ERRORED_TICK = `(aborted_reason IS 'defaults_unavailable' OR (completed > 0 AND 2 * gateway_errors >= completed))`;
+
+/** The first failing tick after the last healthy one, however long ago that was. */
+const ERROR_RUN_START = `SELECT MIN(slot_start) AS since FROM ticks WHERE network = ?1
+	AND slot_start > COALESCE(
+		(SELECT MAX(slot_start) FROM ticks WHERE network = ?1 AND NOT ${ERRORED_TICK}), '')`;
+
 export function createStore(db: D1Database): Store {
 	return {
 		async saveTick(tick, { dropRawBefore }) {
 			const { network, start } = tick.slot;
 			const probes = tick.probes;
 			const statements = [
-				...bulkUpsert(db, {
+				...bulkInsert(db, {
 					table: "corridors",
 					columns: CORRIDOR_COLUMNS,
 					conflict: ["network", "id"],
@@ -261,11 +315,7 @@ export function createStore(db: D1Database): Store {
 						`INSERT INTO ticks (network, slot_start, slot_index, started_at, finished_at,
 							corridor_count, planned, completed, gateway_errors, aborted_reason, aborted_message)
 						VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-						ON CONFLICT (network, slot_start) DO UPDATE SET slot_index = excluded.slot_index,
-							started_at = excluded.started_at, finished_at = excluded.finished_at,
-							corridor_count = excluded.corridor_count, planned = excluded.planned,
-							completed = excluded.completed, gateway_errors = excluded.gateway_errors,
-							aborted_reason = excluded.aborted_reason, aborted_message = excluded.aborted_message`,
+						ON CONFLICT (network, slot_start) DO NOTHING`,
 					)
 					.bind(
 						network,
@@ -280,28 +330,19 @@ export function createStore(db: D1Database): Store {
 						tick.aborted?.reason ?? null,
 						tick.aborted?.message ?? null,
 					),
-				...bulkUpsert(db, {
+				...bulkInsert(db, {
 					table: "probes",
 					columns: PROBE_COLUMNS,
 					conflict: ["id"],
 					rows: probes.map(probeRow),
 				}),
-				...(probes.length === 0
-					? []
-					: [
-							db
-								.prepare(
-									"DELETE FROM probe_declines WHERE probe_id IN (SELECT value FROM json_each(?1))",
-								)
-								.bind(JSON.stringify(probes.map((probe) => probe.id))),
-						]),
-				...bulkUpsert(db, {
+				...bulkInsert(db, {
 					table: "probe_declines",
 					columns: DECLINE_COLUMNS,
 					conflict: ["probe_id", "ordinal"],
 					rows: probes.flatMap(declineRows),
 				}),
-				...bulkUpsert(db, {
+				...bulkInsert(db, {
 					table: "probe_raw",
 					columns: RAW_COLUMNS,
 					conflict: ["probe_id"],
@@ -314,13 +355,14 @@ export function createStore(db: D1Database): Store {
 			await db.batch(statements);
 		},
 
-		async readSnapshotSource(network) {
-			const [corridorRows, probeRows, tickRows] = await db.batch([
+		async readSnapshotSource(network, tiers) {
+			const [corridorRows, probeRows, tickRows, runRows] = await db.batch([
 				db.prepare(`${CURRENT_CORRIDORS} ORDER BY id`).bind(network),
-				db.prepare(LATEST_TWO).bind(network, JSON.stringify(AMOUNT_TIERS)),
+				db.prepare(LATEST_TWO).bind(network, JSON.stringify(tiers)),
 				db
-					.prepare("SELECT * FROM ticks WHERE network = ?1 ORDER BY slot_start DESC LIMIT ?2")
-					.bind(network, RECENT_TICKS),
+					.prepare("SELECT * FROM ticks WHERE network = ?1 ORDER BY slot_start DESC LIMIT 1")
+					.bind(network),
+				db.prepare(ERROR_RUN_START).bind(network),
 			]);
 			const corridors = (corridorRows?.results ?? []).map((row) => corridorRowSchema.parse(row));
 			const readings = (probeRows?.results ?? [])
@@ -339,7 +381,8 @@ export function createStore(db: D1Database): Store {
 			return {
 				corridors,
 				tiers: [...byTier.values()],
-				ticks: (tickRows?.results ?? []).map((row) => tickRowSchema.parse(row)),
+				lastTick: (tickRows?.results ?? []).map((row) => tickRowSchema.parse(row))[0] ?? null,
+				errorRunStart: errorRunRowSchema.parse(runRows?.results[0]).since,
 			};
 		},
 

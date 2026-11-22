@@ -75,8 +75,11 @@ export interface QuoteObservation {
 	 * share a peg, because a spread against face value is then meaningless.
 	 */
 	readonly spreadBps: number | null;
-	/** `awardDeadline` minus the time the quote was first observed. */
-	readonly priceHoldMs: number;
+	/**
+	 * `awardDeadline` minus the time the quote was first observed. Null when the
+	 * probe did not observe it arrive, as for a replayed batch.
+	 */
+	readonly priceHoldMs: number | null;
 }
 
 export interface DeclineEntry {
@@ -169,6 +172,8 @@ export interface TickRecord {
 	/** Corridors discovered from `/v1/defaults` this tick. Empty when discovery failed. */
 	readonly corridors: readonly Corridor[];
 	readonly planned: number;
+	/** Targets left out because a tier amount has more fractional digits than the destination token. */
+	readonly unrepresentable: number;
 	readonly probes: readonly ProbeRecord[];
 	/** Set when the tick stopped before the plan was done. */
 	readonly aborted: TickAbort | null;

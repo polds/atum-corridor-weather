@@ -36,6 +36,7 @@ async function tick(env: Env, scheduledTimeMs: number): Promise<void> {
 		slot: record.slot.start,
 		corridors: record.corridors.length,
 		planned: record.planned,
+		unrepresentable: record.unrepresentable,
 		completed: record.probes.length,
 		outcomes: record.probes.map((probe) => probe.outcome.kind),
 		aborted: record.aborted,
