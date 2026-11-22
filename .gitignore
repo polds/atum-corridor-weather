@@ -5,3 +5,4 @@ coverage/
 .dev.vars
 *.log
 .audit/
+.claude/worktrees/
