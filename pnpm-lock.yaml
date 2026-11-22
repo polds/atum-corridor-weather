@@ -30,6 +30,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      ethers:
+        specifier: ^6.17.0
+        version: 6.17.0(bufferutil@4.2.0)(utf-8-validate@6.1.0)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -2917,7 +2920,7 @@ snapshots:
 
   '@types/connect@3.4.38':
     dependencies:
-      '@types/node': 12.20.55
+      '@types/node': 26.6.6
 
   '@types/deep-eql@4.0.2': {}
 
@@ -2925,7 +2928,7 @@ snapshots:
 
   '@types/node-fetch@2.6.13':
     dependencies:
-      '@types/node': 18.19.130
+      '@types/node': 26.6.6
       form-data: 4.0.6
 
   '@types/node@12.20.55': {}
@@ -2946,7 +2949,7 @@ snapshots:
 
   '@types/ws@7.4.7':
     dependencies:
-      '@types/node': 12.20.55
+      '@types/node': 26.6.6
 
   '@types/ws@8.18.2':
     dependencies:
