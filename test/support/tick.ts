@@ -3,7 +3,14 @@ import { createGatewayClient } from "../../src/gateway/client";
 import { createStore, type Store } from "../../src/store/store";
 import { type Config, parseConfig } from "../../src/worker/config";
 import type { TickDeps } from "../../src/worker/tick";
-import { FakeClock, fakeGateway, jsonResponse, type Scenario, scriptedFetch } from "./fake-gateway";
+import {
+	FakeClock,
+	fakeGateway,
+	type Handler,
+	jsonResponse,
+	type Scenario,
+	scriptedFetch,
+} from "./fake-gateway";
 import { fixtures } from "./fixtures";
 
 /** The deployed configuration with test overrides. */
@@ -24,6 +31,8 @@ export function tickHarness(params: {
 	readonly config: Config;
 	readonly scenario: Scenario;
 	readonly defaults?: () => Response;
+	/** Rewrites the fake gateway's answers. */
+	readonly wrap?: (handler: Handler) => Handler;
 }): {
 	readonly deps: TickDeps;
 	readonly clock: FakeClock;
@@ -31,13 +40,12 @@ export function tickHarness(params: {
 	readonly requests: ReturnType<typeof scriptedFetch>["requests"];
 } {
 	const clock = new FakeClock(params.startMs);
-	const fake = scriptedFetch(
-		fakeGateway({
-			clock,
-			defaults: params.defaults ?? (() => jsonResponse(200, fixtures.testnetDefaults)),
-			scenario: params.scenario,
-		}),
-	);
+	const gateway = fakeGateway({
+		clock,
+		defaults: params.defaults ?? (() => jsonResponse(200, fixtures.testnetDefaults)),
+		scenario: params.scenario,
+	});
+	const fake = scriptedFetch(params.wrap?.(gateway) ?? gateway);
 	const store = createStore(env.DB);
 	return {
 		deps: {

@@ -38,6 +38,35 @@ describe("defaults listing schema", () => {
 		expect(listing["eip155:1"]?.tokens.map((token) => token.symbol)).toContain("WETH");
 	});
 
+	it("keeps every listed symbol and drops a token whose symbol is not a short ticker", () => {
+		for (const defaults of [fixtures.testnetDefaults, fixtures.mainnetDefaults]) {
+			const symbols = Object.values(defaults).flatMap((chain) =>
+				chain.tokens.map((token) => token.symbol),
+			);
+			const kept = Object.values(defaultsListingSchema.parse(defaults)).flatMap((chain) =>
+				chain.tokens.map((token) => token.symbol),
+			);
+			expect(kept).toStrictEqual(symbols);
+		}
+		const token = (symbol: string) => ({ address: "0xa", decimals: 6, symbol });
+		const listing = defaultsListingSchema.parse({
+			"eip155:1": {
+				tokens: [
+					token("USDC.e"),
+					token("A".repeat(20)),
+					token("A".repeat(21)),
+					token("<img src=x>"),
+					token("US DC"),
+					token(""),
+				],
+			},
+		});
+		expect(listing["eip155:1"]?.tokens.map((kept) => kept.symbol)).toStrictEqual([
+			"USDC.e",
+			"A".repeat(20),
+		]);
+	});
+
 	it("drops a malformed chain or token and keeps the rest", () => {
 		const listing = defaultsListingSchema.parse({
 			"eip155:1": {
@@ -77,6 +106,18 @@ describe.each(probeFixtures)("probe fixture %s", (_name, fixture) => {
 	});
 });
 
+describe("create response schema", () => {
+	it("accepts only a quote_request_id that is safe in a URL path", () => {
+		const parses = (id: string) =>
+			createResponseSchema.safeParse({ quote_request_id: id, status: "collecting" }).success;
+		expect(parses("qr_01a202d4-bb03-7340-93a0-c945aa0f7b23")).toBe(true);
+		expect(parses("a".repeat(128))).toBe(true);
+		for (const hostile of ["\ud800", "", "a".repeat(129), "qr/../awards", "qr x", "qr%2F"]) {
+			expect(parses(hostile), JSON.stringify(hostile)).toBe(false);
+		}
+	});
+});
+
 describe("status response schema", () => {
 	it("reads the quote fields the probe needs", () => {
 		const parsed = statusResponseSchema.parse(fixtures.quoted.events[1]?.json);
@@ -102,9 +143,48 @@ describe("status response schema", () => {
 			quote_request_id: "qr_x",
 			status: "paused",
 			quotes: [],
-			decline_summary: [{ reason: "NEW_REASON", count: 2 }],
+			decline_summary: [{ reason: "NEW_REASON", count: 2, retry_classification: null }],
 		});
 		expect(parsed.requested_count).toBeUndefined();
+	});
+
+	it("keeps a decline code only when it is a short upper-case code with no long hex run", () => {
+		const declines = (reason: string, retry: string) =>
+			statusResponseSchema.parse({
+				quote_request_id: "qr_x",
+				status: "ready",
+				decline_summary: [{ reason, count: 1, retry_classification: retry }],
+			}).decline_summary;
+		expect(declines("INSUFFICIENT_LIQUIDITY", "RETRY_AFTER_DELAY")).toStrictEqual([
+			{ reason: "INSUFFICIENT_LIQUIDITY", count: 1, retry_classification: "RETRY_AFTER_DELAY" },
+		]);
+		expect(declines(`A${"Z".repeat(47)}`, "Z".repeat(48))).toStrictEqual([
+			{ reason: `A${"Z".repeat(47)}`, count: 1, retry_classification: "Z".repeat(48) },
+		]);
+		for (const bad of ["A".repeat(49), "lower", "_LEAD", "", "<b>X</b>", `OP_${"A1".repeat(16)}`]) {
+			expect(declines(bad, bad), bad).toStrictEqual([
+				{ reason: "OTHER", count: 1, retry_classification: null },
+			]);
+		}
+	});
+
+	it("keeps 49 decline entries and sums the rest into one OTHER entry", () => {
+		const parsed = statusResponseSchema.parse({
+			quote_request_id: "qr_x",
+			status: "ready",
+			decline_summary: Array.from({ length: 60 }, (_, index) => ({
+				reason: `R${index}`,
+				count: index,
+				retry_classification: "RETRY_AFTER_DELAY",
+			})),
+		});
+		expect(parsed.decline_summary).toHaveLength(50);
+		expect(parsed.decline_summary?.[48]).toMatchObject({ reason: "R48", count: 48 });
+		expect(parsed.decline_summary?.[49]).toStrictEqual({
+			reason: "OTHER",
+			count: 49 + 50 + 51 + 52 + 53 + 54 + 55 + 56 + 57 + 58 + 59,
+			retry_classification: null,
+		});
 	});
 
 	it("normalizes an award deadline to millisecond UTC and rejects a non-timestamp", () => {

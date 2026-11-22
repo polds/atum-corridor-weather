@@ -549,6 +549,7 @@ export function buildSnapshot(nowMs: number, mode: FixtureMode = "normal"): Snap
 				Math.round(((PAIRS.length * TIERS.length) / PROBES_PER_TICK) * TICK_MINUTES * (10 / 60)) /
 				10,
 		},
+		tiers: TIERS.map(({ tier }) => tier),
 		lastTick: {
 			slotStart: iso(slotStart),
 			finishedAt: iso(slotStart + 104_000),

@@ -7,6 +7,7 @@ import type {
 	Snapshot,
 	SnapshotAsset,
 } from "../../src/domain/snapshot";
+import type { AmountTier } from "../../src/domain/types";
 import { declineChart, type LineSeries, lineChart, sizeChart } from "./charts";
 import { h, hideTip, icon, showTip, tipRow } from "./dom";
 import {
@@ -43,7 +44,6 @@ import {
 	type Route,
 	snapshotAgeMs,
 	summarizeCorridor,
-	TIERS,
 	tiersInOrder,
 } from "./model";
 import {
@@ -450,7 +450,7 @@ function reportContent(board: Board): HTMLElement[] {
 					`${formatCount(snap.corridors.length, "corridor")} between ${formatCount(snap.assets.length, "asset")} on ${formatCount(
 						board.chains.length,
 						"chain",
-					)}, each at ${formatCount(TIERS.length, "amount tier")}.`,
+					)}, each at ${formatCount(snap.tiers.length, "amount tier")}.`,
 				),
 			),
 		),
@@ -733,7 +733,7 @@ function matrix(board: Board, visibleIds: ReadonlySet<string>): HTMLElement {
 						class: "chain-col group-start",
 						title: g.chainLabel,
 					},
-					g.chainLabel,
+					h("span", undefined, g.chainLabel),
 				),
 			),
 		),
@@ -779,7 +779,12 @@ function matrix(board: Board, visibleIds: ReadonlySet<string>): HTMLElement {
 				tr.append(
 					h(
 						"th",
-						{ scope: "rowgroup", rowspan: g.assets.length, class: "chain-row" },
+						{
+							scope: "rowgroup",
+							rowspan: g.assets.length,
+							class: "chain-row",
+							title: g.chainLabel,
+						},
 						h("span", undefined, g.chainLabel),
 					),
 				);
@@ -1036,7 +1041,7 @@ function listTable(
 function assetBlock(asset: SnapshotAsset | undefined, fallback: string): HTMLElement {
 	return h(
 		"span",
-		{ class: "asset" },
+		{ class: "asset", title: assetName(asset, fallback) },
 		h("span", { class: "asset-sym" }, asset?.symbol ?? fallback),
 		asset === undefined ? null : h("span", { class: "asset-chain" }, asset.chainLabel),
 	);
@@ -1112,7 +1117,7 @@ function renderDetail(board: Board, id: string): void {
 			alerts.length === 0
 				? null
 				: h("ul", { class: "alert-list" }, ...alerts.map((a) => alertItem(board, a))),
-			c.lastProbedAt === null ? neverProbed(board) : latestTable(c, src, dst),
+			c.lastProbedAt === null ? neverProbed(board) : latestTable(c, src, dst, board.snapshot.tiers),
 			c.lastProbedAt === null ? null : history,
 		),
 	);
@@ -1147,6 +1152,7 @@ function latestTable(
 	c: CorridorConditions,
 	src: SnapshotAsset | undefined,
 	dst: SnapshotAsset | undefined,
+	configured: readonly AmountTier[],
 ): HTMLElement {
 	const tiers = tiersInOrder(c);
 	return h(
@@ -1186,7 +1192,7 @@ function latestTable(
 				h(
 					"tbody",
 					undefined,
-					...TIERS.map((tier) => {
+					...configured.map((tier) => {
 						const t = tiers.find((x) => x.tier === tier);
 						if (t === undefined) {
 							return h(
@@ -1336,11 +1342,11 @@ function chartSlot(render: (width: number) => SVGSVGElement): HTMLElement {
 	return slot;
 }
 
-function lineLegend(): HTMLElement {
+function lineLegend(tiers: readonly AmountTier[]): HTMLElement {
 	return h(
 		"ul",
 		{ class: "chart-legend" },
-		...TIERS.map((t) =>
+		...tiers.map((t) =>
 			h("li", undefined, h("span", { class: `key-line ${TIER_CLASS[t]}` }), capitalize(t)),
 		),
 	);
@@ -1366,15 +1372,16 @@ function historySections(
 			),
 		];
 	}
-	const prices = priceBySize(c, points);
-	const spreads = spreadSeries(points);
+	const { tiers } = board.snapshot;
+	const prices = priceBySize(tiers, c, points);
+	const spreads = spreadSeries(tiers, points);
 	const anySpread = spreads.some((se) => se.points.some((p) => p.v !== null));
-	const operators = operatorSeries(points);
+	const operators = operatorSeries(tiers, points);
 	const maxOperators = Math.max(1, ...operators.flatMap((se) => se.points.map((p) => p.v ?? 0)));
 	const buckets = declineBuckets({ points, start, end, bucketMs: (end - start) / 28 });
 	const reasons = declineReasons(points);
-	const tallies = outcomeTallies(points);
-	const tierLabel = (tier: (typeof TIERS)[number]): string => {
+	const tallies = outcomeTallies(tiers, points);
+	const tierLabel = (tier: AmountTier): string => {
 		const price = prices.find((p) => p.tier === tier);
 		return price === undefined || price.fulfillmentAmount === null
 			? capitalize(tier)
@@ -1433,7 +1440,7 @@ function historySections(
 			),
 			anySpread
 				? [
-						lineLegend(),
+						lineLegend(tiers),
 						chartSlot((width) =>
 							lineChart({
 								label: `Best spread over the last ${days}, per amount tier. The data table below lists every probe.`,
@@ -1469,7 +1476,7 @@ function historySections(
 				h(
 					"div",
 					{ class: "multiple" },
-					h("h3", undefined, tierLabel(se.tier)),
+					h("h3", { title: tierLabel(se.tier) }, tierLabel(se.tier)),
 					chartSlot((width) =>
 						lineChart({
 							label: `Operators quoting the ${se.tier} tier over the last ${days}. The data table below lists every probe.`,
@@ -1561,7 +1568,7 @@ function historySections(
 					h(
 						"tbody",
 						undefined,
-						...TIERS.map((tier) => {
+						...tiers.map((tier) => {
 							const tally = tallies.get(tier);
 							return h(
 								"tr",

@@ -102,6 +102,23 @@ describe("buildSnapshot", () => {
 		errorRunStart: null,
 	});
 
+	it("lists the configured tiers in small, typical, large order", () => {
+		expect(snapshot.tiers).toStrictEqual(["small", "typical", "large"]);
+		const two = buildSnapshot({
+			network: "testnet",
+			nowMs: NOW,
+			tickIntervalMinutes: 5,
+			probesPerTick: 30,
+			slowQuoteMs: 2500,
+			tierAmounts: { large: "250", small: "1" },
+			corridors: testnetCorridors,
+			tiers: [],
+			lastTick: null,
+			errorRunStart: null,
+		});
+		expect(two.tiers).toStrictEqual(["small", "large"]);
+	});
+
 	it("reports the cadence of a full sweep", () => {
 		expect(snapshot.cadence).toStrictEqual({ probesPerTick: 30, sweepHours: 4.6 });
 		expect(snapshot.lastTick?.slotStart).toBe("2026-11-22T11:55:00.000Z");

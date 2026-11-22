@@ -16,6 +16,7 @@ import {
 	corridorRowSchema,
 	errorRunRowSchema,
 	probeRowSchema,
+	snapshotPartRowSchema,
 	snapshotRowSchema,
 	tickRowSchema,
 } from "./rows";
@@ -56,6 +57,23 @@ export interface Store {
 
 /** Each bound JSON parameter stays well under D1's 2 MB value limit. */
 const MAX_PARAMETER_BYTES = 512 * 1024;
+
+/** UTF-16 units per stored snapshot part. Four bytes each at worst, still under D1's limit. */
+const SNAPSHOT_PART_UNITS = 400_000;
+
+/** The snapshot text in parts of at most `SNAPSHOT_PART_UNITS`, never splitting a surrogate pair. */
+function snapshotParts(json: string): string[] {
+	const parts: string[] = [];
+	let start = 0;
+	while (start < json.length) {
+		let end = Math.min(start + SNAPSHOT_PART_UNITS, json.length);
+		const last = json.charCodeAt(end - 1);
+		if (end < json.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
+		parts.push(json.slice(start, end));
+		start = end;
+	}
+	return parts;
+}
 
 /**
  * The most `probe_raw.raw_json` holds for one probe. JSON string escaping can double
@@ -236,12 +254,19 @@ function byteLength(text: string): number {
 	return new TextEncoder().encode(text).byteLength;
 }
 
-/** The exchange with its response body replaced by a marker that keeps the body's size. */
-function truncated(exchange: RawExchange): RawExchange {
+/** An exchange as `probe_raw` keeps it: a response body over the raw budget becomes a marker. */
+type StoredExchange =
+	| RawExchange
+	| (Omit<RawExchange, "responseBody"> & {
+			readonly responseBody: { readonly truncated: true; readonly bytes: number };
+	  });
+
+/** The exchange with its response body replaced by a marker that keeps the body's UTF-8 size. */
+function truncated(exchange: RawExchange): StoredExchange {
 	if (exchange.responseBody === null) return exchange;
 	return {
 		...exchange,
-		responseBody: { truncated: true, bytes: byteLength(JSON.stringify(exchange.responseBody)) },
+		responseBody: { truncated: true, bytes: byteLength(exchange.responseBody) },
 	};
 }
 
@@ -252,7 +277,7 @@ function truncated(exchange: RawExchange): RawExchange {
  */
 function rawJson(probe: ProbeRecord): string {
 	const created = probe.raw.find((exchange) => exchange.method === "POST");
-	const text = (exchanges: readonly RawExchange[]) =>
+	const text = (exchanges: readonly StoredExchange[]) =>
 		JSON.stringify({ requestBody: created?.requestBody ?? null, exchanges });
 	const whole = text(probe.raw);
 	if (byteLength(whole) <= RAW_BUDGET_BYTES) return whole;
@@ -387,30 +412,29 @@ export function createStore(db: D1Database): Store {
 		},
 
 		async saveSnapshot(snapshot) {
-			await db
-				.prepare(
-					`INSERT INTO snapshots (network, generated_at, snapshot_json) VALUES (?1, ?2, ?3)
-					ON CONFLICT (network) DO UPDATE SET generated_at = excluded.generated_at,
-						snapshot_json = excluded.snapshot_json`,
-				)
-				.bind(snapshot.network, snapshot.generatedAt, JSON.stringify(snapshot))
-				.run();
+			const insert = db.prepare(
+				"INSERT INTO snapshots (network, part, generated_at, snapshot_json) VALUES (?1, ?2, ?3, ?4)",
+			);
+			await db.batch([
+				db.prepare("DELETE FROM snapshots WHERE network = ?1").bind(snapshot.network),
+				...snapshotParts(JSON.stringify(snapshot)).map((part, index) =>
+					insert.bind(snapshot.network, index, snapshot.generatedAt, part),
+				),
+			]);
 		},
 
 		async readSnapshotJson(network) {
-			const json = await db
-				.prepare("SELECT snapshot_json FROM snapshots WHERE network = ?1")
+			const rows = await db
+				.prepare("SELECT snapshot_json FROM snapshots WHERE network = ?1 ORDER BY part")
 				.bind(network)
-				.first("snapshot_json");
-			return typeof json === "string" ? json : null;
+				.all();
+			if (rows.results.length === 0) return null;
+			return rows.results.map((row) => snapshotPartRowSchema.parse(row).snapshot_json).join("");
 		},
 
 		async readSnapshot(network) {
-			const row = await db
-				.prepare("SELECT snapshot_json FROM snapshots WHERE network = ?1")
-				.bind(network)
-				.first();
-			return row === null ? null : snapshotRowSchema.parse(row).snapshot_json;
+			const json = await this.readSnapshotJson(network);
+			return json === null ? null : snapshotRowSchema.parse({ snapshot_json: json }).snapshot_json;
 		},
 
 		async hasCorridor(network, corridorId) {

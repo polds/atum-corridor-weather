@@ -83,7 +83,7 @@ export interface QuoteObservation {
 }
 
 export interface DeclineEntry {
-	/** Open set. The gateway adds reasons over time. */
+	/** Open set. The gateway adds reasons over time. `OTHER` when the gateway sent no publishable code. */
 	readonly reason: string;
 	/** `RETRY_AFTER_DELAY`, `NOT_RETRYABLE_FIX_REQUEST`, `CONTACT_SUPPORT`, or absent. */
 	readonly retryClassification: string | null;
@@ -146,8 +146,12 @@ export interface RawExchange {
 	readonly requestBody: unknown | null;
 	readonly status: number | null;
 	readonly latencyMs: number;
-	/** Parsed JSON when the body was JSON, otherwise the text, otherwise null. */
-	readonly responseBody: unknown | null;
+	/**
+	 * The body text exactly as the gateway sent it. Null when no body was read:
+	 * the request was refused or failed, or the body was over the size cap.
+	 * Never re-serialized from parsed JSON, whose depth the gateway controls.
+	 */
+	readonly responseBody: string | null;
 	readonly error: string | null;
 }
 

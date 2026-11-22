@@ -779,6 +779,19 @@ main:focus {
 	font-size: 10.5px;
 }
 
+/*
+ * Symbols and chain labels come from the gateway. However long one is, it is
+ * clipped to its header and ellipsized; the header's title holds the full text.
+ */
+.matrix .chain-col span,
+.matrix .chain-row span {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+}
+
 .matrix .sym-col {
 	white-space: nowrap;
 	max-width: 48px;
@@ -793,6 +806,9 @@ main:focus {
 	writing-mode: vertical-rl;
 	transform: rotate(180deg);
 	text-align: left;
+	max-height: 60px;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .matrix .chain-row,
@@ -1004,14 +1020,21 @@ main:focus {
 	color: var(--text);
 }
 
-.l-name a:hover .asset-sym {
-	text-decoration: underline;
-}
-
 .asset {
 	display: inline-flex;
+	flex-wrap: wrap;
 	align-items: baseline;
 	gap: 6px;
+	max-width: 100%;
+}
+
+/* A name from the gateway never widens the page: capped, ellipsized, full text in the title. */
+.asset-sym,
+.asset-chain {
+	max-width: min(16em, 60vw);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .asset-sym {
@@ -1022,6 +1045,10 @@ main:focus {
 	color: var(--muted);
 	font-size: 0.85em;
 	font-weight: 400;
+}
+
+.l-name a:hover .asset-sym {
+	text-decoration: underline;
 }
 
 .arrow {
@@ -1225,8 +1252,10 @@ main:focus {
 
 /* Detail ------------------------------------------------------------------- */
 
+/* Columns never grow past the page for a long name; its text wraps or is clipped instead. */
 .detail {
 	display: grid;
+	grid-template-columns: minmax(0, 1fr);
 	gap: 16px;
 }
 
@@ -1270,6 +1299,7 @@ main:focus {
 	border-radius: 10px;
 	padding: 16px;
 	display: grid;
+	grid-template-columns: minmax(0, 1fr);
 	align-content: start;
 	gap: 10px;
 	min-width: 0;
@@ -1496,6 +1526,10 @@ details.card > summary {
 	font-weight: 600;
 	color: var(--text-2);
 	margin: 4px 0 0;
+	/* The label carries the destination symbol. */
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .series .dot,

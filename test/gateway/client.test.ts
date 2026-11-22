@@ -85,7 +85,7 @@ describe("results", () => {
 			latencyMs: 0,
 			error: null,
 		});
-		expect(result.exchange.responseBody).toStrictEqual(fixtures.quoted.events[1]?.json);
+		expect(result.exchange.responseBody).toBe(JSON.stringify(fixtures.quoted.events[1]?.json));
 	});
 
 	it("keeps a non-JSON 500 body as text", async () => {

@@ -90,6 +90,8 @@ export interface Snapshot {
 	readonly tickIntervalMinutes: number;
 	/** Probes per tick and the resulting hours for one sweep of every target. */
 	readonly cadence: { readonly probesPerTick: number; readonly sweepHours: number };
+	/** The configured amount tiers, in small, typical, large order. Readings cover these only. */
+	readonly tiers: readonly AmountTier[];
 	readonly lastTick: SnapshotTick | null;
 	readonly assets: readonly SnapshotAsset[];
 	readonly corridors: readonly CorridorConditions[];

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PROBE_IDENTITY } from "../../src/domain/identity";
 import { probeTargets, slotAt } from "../../src/domain/schedule";
 import type { ProbeIdentity } from "../../src/domain/types";
-import { createGatewayClient } from "../../src/gateway/client";
+import { createGatewayClient, type GatewayClient } from "../../src/gateway/client";
 import { isRateLimited, type ProbePlan, runProbe } from "../../src/gateway/probe";
 import {
 	FakeClock,
@@ -27,7 +27,11 @@ const [target] = probeTargets([corridorById(ARB_TO_BASE_USDC)], { small: "1" });
 
 function probe(
 	handler: (clock: FakeClock) => Handler,
-	options: { readonly timeoutMs?: number; readonly identity?: ProbeIdentity } = {},
+	options: {
+		readonly timeoutMs?: number;
+		readonly identity?: ProbeIdentity;
+		readonly wrap?: (client: GatewayClient) => GatewayClient;
+	} = {},
 ) {
 	if (target === undefined) throw new Error("no target");
 	const clock = new FakeClock(START);
@@ -39,14 +43,15 @@ function probe(
 		listing: testnetListing,
 		identity: options.identity ?? PROBE_IDENTITY,
 	};
+	const client = createGatewayClient({
+		baseUrl: "https://gateway.test",
+		userAgent: "corridor-weather/test",
+		fetch: fake.fetch,
+		now: clock.now,
+		timeoutMs: options.timeoutMs ?? 1000,
+	});
 	const run = runProbe(plan, {
-		gateway: createGatewayClient({
-			baseUrl: "https://gateway.test",
-			userAgent: "corridor-weather/test",
-			fetch: fake.fetch,
-			now: clock.now,
-			timeoutMs: options.timeoutMs ?? 1000,
-		}),
+		gateway: options.wrap?.(client) ?? client,
 		now: clock.now,
 		sleep: clock.sleep,
 		pollIntervalMs: 500,
@@ -231,6 +236,25 @@ describe("runProbe", () => {
 			code: null,
 		});
 		expect(record.outcome).toHaveProperty("message", expect.stringMatching(/^timeout: /));
+	});
+
+	it("records a gateway error instead of throwing when a step throws", async () => {
+		const record = await probe((clock) => replay(fixtures.quoted, clock), {
+			wrap: (client) => ({
+				...client,
+				getQuoteRequest: () => {
+					throw new URIError("URI malformed");
+				},
+			}),
+		}).run;
+		expect(record.outcome).toStrictEqual({
+			kind: "gateway_error",
+			phase: "poll",
+			httpStatus: null,
+			code: null,
+			message: "probe failed: URIError: URI malformed",
+		});
+		expect(record.raw).toHaveLength(1);
 	});
 
 	it("records a gateway error and sends nothing when the body cannot be built", async () => {

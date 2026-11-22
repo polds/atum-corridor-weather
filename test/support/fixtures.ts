@@ -44,3 +44,16 @@ export function corridorById(id: string): Corridor {
 	if (corridor === undefined) throw new Error(`no corridor ${id} in the testnet fixture`);
 	return corridor;
 }
+
+/** `probe.declined-insufficient-liquidity.json` with `declines` as the decline summary of every poll. */
+export function declinedWith(declines: readonly unknown[]): ProbeFixture {
+	const [created, ...polls] = declinedLiquidity.events;
+	if (created === undefined) throw new Error("fixture has no events");
+	return {
+		body: declinedLiquidity.body,
+		events: [
+			created,
+			...polls.map((event) => ({ ...event, json: { ...event.json, decline_summary: declines } })),
+		],
+	};
+}

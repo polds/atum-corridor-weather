@@ -6,7 +6,7 @@ import { createStore } from "../../src/store/store";
 import { runTick, type TickDeps } from "../../src/worker/tick";
 import { clearTables } from "../support/db";
 import { FakeClock, type Handler, jsonResponse, scriptedFetch } from "../support/fake-gateway";
-import { fixtures, type ProbeFixture, QUOTED_SETTLER } from "../support/fixtures";
+import { declinedWith, fixtures, type ProbeFixture, QUOTED_SETTLER } from "../support/fixtures";
 import { ONE_TARGET, postedRequestIds, testConfig, tickHarness } from "../support/tick";
 
 const SCHEDULED = Date.parse("2026-11-22T10:35:00.000Z");
@@ -160,6 +160,23 @@ describe("runTick", () => {
 		expect(await count("probes")).toBe(2);
 	});
 
+	it("records a gateway error for a hostile quote_request_id and stores the rest of the tick", async () => {
+		const { deps } = tickHarness({
+			startMs: SCHEDULED + 1000,
+			config: testConfig({ ...ONE_TARGET, AMOUNT_TIERS: '{"small":"1","typical":"25"}' }),
+			scenario: (requestId) =>
+				requestId.endsWith(".small")
+					? new Response('{"quote_request_id":"\\ud800","status":"collecting"}', { status: 202 })
+					: fixtures.quoted,
+		});
+		await runTick(deps, SCHEDULED);
+		const probes = await env.DB.prepare("SELECT tier, outcome FROM probes ORDER BY tier").all();
+		expect(probes.results).toStrictEqual([
+			{ tier: "small", outcome: "gateway_error" },
+			{ tier: "typical", outcome: "quoted" },
+		]);
+	});
+
 	it("sends nothing when probing is disabled", async () => {
 		const { deps, requests, store } = tickHarness({
 			startMs: SCHEDULED + 1000,
@@ -261,8 +278,57 @@ describe("oversized gateway responses", () => {
 		expect((await store.readSnapshot("testnet"))?.lastTick).toMatchObject({ completed: 1 });
 	});
 
+	it("keeps publishing snapshots after probes stored decline reasons of 240 KB", async () => {
+		const reason = "R".repeat(240_000);
+		const config = testConfig({
+			CORRIDOR_FILTER: "^eip155:\\d+/USDC>eip155:\\d+/USDC$",
+			AMOUNT_TIERS: '{"small":"1","typical":"25","large":"100"}',
+			PROBES_PER_TICK: "15",
+		});
+		const hostile = tickHarness({
+			startMs: SCHEDULED + 1000,
+			config,
+			scenario: () => declinedWith([{ reason, count: 1, retry_classification: "x".repeat(1000) }]),
+		});
+		const first = await runTick(hostile.deps, SCHEDULED);
+		expect(first.probes.map((probe) => probe.outcome.kind)).toStrictEqual(
+			Array(15).fill("declined"),
+		);
+		const next = tickHarness({ startMs: SCHEDULED + 301_000, config, scenario: quotedEverywhere });
+		await runTick(next.deps, SCHEDULED + 300_000);
+		const snapshot = await next.store.readSnapshot("testnet");
+		expect(snapshot?.lastTick?.slotStart).toBe("2026-11-22T10:40:00.000Z");
+		expect(snapshot?.corridors.flatMap((corridor) => corridor.tiers)).toContainEqual(
+			expect.objectContaining({
+				outcome: "declined",
+				declines: [{ reason: "OTHER", retryClassification: null, count: 1 }],
+			}),
+		);
+	});
+
+	for (const depth of [10_000, 100_000]) {
+		it(`stores the tick when every poll answer nests arrays ${depth} deep in an unknown field`, async () => {
+			const nested = `${"[".repeat(depth)}${"]".repeat(depth)}`;
+			const { deps } = tickHarness({
+				startMs: SCHEDULED + 1000,
+				config: testConfig(ONE_TARGET),
+				scenario: quotedEverywhere,
+				wrap: (handler) => async (request) => {
+					const response = await handler(request);
+					if (request.method === "POST" || request.url.pathname === "/v1/defaults") return response;
+					const text = await response.text();
+					return new Response(`${text.slice(0, -1)},"x":${nested}}`, { status: response.status });
+				},
+			});
+			await runTick(deps, SCHEDULED);
+			expect(await count("ticks")).toBe(1);
+			expect(await storedProbe()).toMatchObject({ outcome: "quoted" });
+			expect(await count("probe_raw")).toBe(1);
+		});
+	}
+
 	it("cuts every response body when the first and last exchanges alone exceed the raw budget", async () => {
-		// Each control character takes six bytes once JSON-encoded.
+		// Each control character takes six bytes once JSON-encoded, one as body text.
 		const body = "\u0001".repeat(250_000);
 		const { deps } = tickHarness({
 			startMs: SCHEDULED + 1000,
@@ -273,7 +339,7 @@ describe("oversized gateway responses", () => {
 		const raw = await env.DB.prepare("SELECT raw_json FROM probe_raw").first("raw_json");
 		const { exchanges } = JSON.parse(String(raw)) as { exchanges: RawExchange[] };
 		expect(exchanges.map((exchange) => exchange.responseBody)).toStrictEqual([
-			{ truncated: true, bytes: JSON.stringify(body).length },
+			{ truncated: true, bytes: body.length },
 		]);
 		expect(await storedProbe()).toMatchObject({ outcome: "gateway_error" });
 	});
@@ -299,7 +365,7 @@ describe("oversized gateway responses", () => {
 		expect(exchanges.at(-1)).toStrictEqual(probe?.raw.at(-1));
 		expect(exchanges[1]?.responseBody).toStrictEqual({
 			truncated: true,
-			bytes: JSON.stringify(probe?.raw[1]?.responseBody).length,
+			bytes: probe?.raw[1]?.responseBody?.length,
 		});
 		expect((await store.readSnapshot("testnet"))?.corridors[0]?.condition).toBe("fair");
 	});

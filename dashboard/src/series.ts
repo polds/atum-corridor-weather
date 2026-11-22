@@ -3,7 +3,6 @@
  */
 import type { CorridorConditions, HistoryPoint } from "../../src/domain/snapshot";
 import type { AmountTier, ProbeOutcomeKind } from "../../src/domain/types";
-import { TIERS } from "./model";
 
 export interface SeriesPoint {
 	readonly t: number;
@@ -18,10 +17,11 @@ export interface TierSeries {
 }
 
 function byTier(
+	tiers: readonly AmountTier[],
 	points: readonly HistoryPoint[],
 	value: (p: HistoryPoint) => number | null,
 ): readonly TierSeries[] {
-	return TIERS.map((tier) => ({
+	return tiers.map((tier) => ({
 		tier,
 		points: points
 			.filter((p) => p.tier === tier)
@@ -31,16 +31,22 @@ function byTier(
 }
 
 /** Best spread per tier. A probe that was not quoted, or quoted across pegs, is a gap. */
-export function spreadSeries(points: readonly HistoryPoint[]): readonly TierSeries[] {
-	return byTier(points, (p) => (p.outcome === "quoted" ? p.bestSpreadBps : null));
+export function spreadSeries(
+	tiers: readonly AmountTier[],
+	points: readonly HistoryPoint[],
+): readonly TierSeries[] {
+	return byTier(tiers, points, (p) => (p.outcome === "quoted" ? p.bestSpreadBps : null));
 }
 
 /**
  * Operators that quoted, per tier. Any outcome other than `quoted` counts as
  * zero, which is how a quotes-lost event shows: the line drops to the floor.
  */
-export function operatorSeries(points: readonly HistoryPoint[]): readonly TierSeries[] {
-	return byTier(points, (p) => (p.outcome === "quoted" ? p.operatorCount : 0));
+export function operatorSeries(
+	tiers: readonly AmountTier[],
+	points: readonly HistoryPoint[],
+): readonly TierSeries[] {
+	return byTier(tiers, points, (p) => (p.outcome === "quoted" ? p.operatorCount : 0));
 }
 
 export const RETRY_AFTER_DELAY = "RETRY_AFTER_DELAY";
@@ -117,10 +123,11 @@ export type OutcomeTally = Readonly<Record<ProbeOutcomeKind, number>>;
 
 /** Probe outcomes per tier over the window. */
 export function outcomeTallies(
+	tiers: readonly AmountTier[],
 	points: readonly HistoryPoint[],
 ): ReadonlyMap<AmountTier, OutcomeTally> {
 	const tallies = new Map<AmountTier, Record<ProbeOutcomeKind, number>>();
-	for (const tier of TIERS) {
+	for (const tier of tiers) {
 		tallies.set(tier, { quoted: 0, declined: 0, silent: 0, incomplete: 0, gateway_error: 0 });
 	}
 	for (const p of points) {
@@ -141,10 +148,11 @@ export interface TierPrice {
 
 /** Best spread per amount tier: the latest reading, with the window's range behind it. */
 export function priceBySize(
+	tiers: readonly AmountTier[],
 	corridor: CorridorConditions,
 	points: readonly HistoryPoint[],
 ): readonly TierPrice[] {
-	return TIERS.map((tier) => {
+	return tiers.map((tier) => {
 		const latest = corridor.tiers.find((t) => t.tier === tier);
 		const spreads = points
 			.filter((p) => p.tier === tier && p.outcome === "quoted" && p.bestSpreadBps !== null)

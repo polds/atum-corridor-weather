@@ -7,7 +7,7 @@ import { handleRequest } from "../../src/worker/routes";
 import { runTick } from "../../src/worker/tick";
 import { clearTables } from "../support/db";
 import type { Scenario } from "../support/fake-gateway";
-import { ARB_TO_BASE_USDC, fixtures, QUOTED_SETTLER } from "../support/fixtures";
+import { ARB_TO_BASE_USDC, declinedWith, fixtures, QUOTED_SETTLER } from "../support/fixtures";
 import { ONE_TARGET, testConfig, tickHarness } from "../support/tick";
 
 const INTERVAL_MS = 5 * 60_000;
@@ -139,6 +139,31 @@ describe("read-only routes", () => {
 			expect(body, path).not.toContain(QUOTED_SETTLER);
 			expect(body, path).not.toContain(QUOTED_SETTLER.slice(2));
 		}
+	});
+
+	it("publishes no operator address that a decline reason carries", async () => {
+		const settler = "5e77135e77135e77135e77135e77135e77135e77";
+		await tickAt(0, () =>
+			declinedWith([
+				{ reason: `OPERATOR_0x${settler}_DECLINED`, count: 1 },
+				{
+					reason: `OP_${settler.toUpperCase()}`,
+					count: 1,
+					retry_classification: `R_${settler.toUpperCase()}`,
+				},
+			]),
+		);
+		const raw = await env.DB.prepare("SELECT raw_json FROM probe_raw").first("raw_json");
+		expect(String(raw)).toContain(settler);
+		for (const path of ["/api/v1/snapshot.json", HISTORY, "/metrics", "/api/v1/health"]) {
+			const body = (await (await get(path)).text()).toLowerCase();
+			expect(body, path).not.toContain(settler.slice(0, 32));
+		}
+		const snapshot = await createStore(env.DB).readSnapshot("testnet");
+		expect(snapshot?.corridors[0]?.tiers[0]?.declines).toStrictEqual([
+			{ reason: "OTHER", retryClassification: null, count: 1 },
+			{ reason: "OTHER", retryClassification: null, count: 1 },
+		]);
 	});
 
 	const direct = (path: string, overrides: Readonly<Record<string, string>> = {}) =>

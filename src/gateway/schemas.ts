@@ -1,7 +1,8 @@
 /**
  * Response schemas for the three gateway routes Corridor Weather calls. Unknown
- * fields are dropped, never rejected. Open string sets (`status`, decline
- * `reason`, `retry_classification`) stay strings.
+ * fields are dropped, never rejected. Open string sets stay strings: `status`
+ * as sent, and a decline `reason` or `retry_classification` when it is a
+ * publishable code (otherwise `OTHER` and null).
  */
 import { z } from "zod";
 import { isAtomicAmount, toIsoTimestamp } from "../domain/brands";
@@ -14,7 +15,8 @@ function isPresent<T>(value: T | null): value is T {
 const tokenSchema: z.ZodType<ListedToken, z.ZodTypeDef, unknown> = z.object({
 	address: z.string().min(1),
 	decimals: z.number().int().min(0).max(36),
-	symbol: z.string().min(1),
+	/** A ticker such as `USDC.e`: anything longer or stranger is not shown to a reader. */
+	symbol: z.string().regex(/^[\w.-]{1,20}$/),
 });
 
 const chainSchema: z.ZodType<ListedChain, z.ZodTypeDef, unknown> = z.object({
@@ -43,7 +45,8 @@ export const defaultsListingSchema: z.ZodType<DefaultsListing, z.ZodTypeDef, unk
 
 /** `POST /v1/payments/quote-requests`, both the 202 and the 200 shape. */
 export const createResponseSchema = z.object({
-	quote_request_id: z.string().min(1),
+	/** Goes into the poll path, so only characters that need no encoding there. */
+	quote_request_id: z.string().regex(/^[A-Za-z0-9._-]{1,128}$/),
 	status: z.string(),
 	/** Absent from a gateway that predates the field, which never replays. */
 	idempotent_replay: z.boolean().default(false),
@@ -68,10 +71,36 @@ const quoteSchema = z.object({
 	}),
 });
 
+/** The reason the Atum docs prescribe for a decline reason the client does not recognise. */
+const OTHER_REASON = "OTHER";
+/** Decline entries kept from one response. The rest are summed into one `OTHER` entry. */
+const MAX_DECLINES = 50;
+
+/**
+ * A decline code the snapshot may publish: short, upper case, and with no hex
+ * run long enough to be an operator address or a hash.
+ */
+function isPublishableCode(code: string): boolean {
+	return /^[A-Z][A-Z0-9_]{0,47}$/.test(code) && !/[0-9A-F]{32,}/.test(code);
+}
+
 const declineSchema = z.object({
-	reason: z.string(),
+	reason: z.string().transform((reason) => (isPublishableCode(reason) ? reason : OTHER_REASON)),
 	count: z.number().int().nonnegative(),
-	retry_classification: z.string().optional(),
+	retry_classification: z
+		.string()
+		.optional()
+		.transform((code) => (code !== undefined && isPublishableCode(code) ? code : null)),
+});
+
+const declineSummarySchema = z.array(declineSchema).transform((declines) => {
+	if (declines.length <= MAX_DECLINES) return declines;
+	const rest = declines.slice(MAX_DECLINES - 1);
+	const count = rest.reduce((sum, decline) => sum + decline.count, 0);
+	return [
+		...declines.slice(0, MAX_DECLINES - 1),
+		{ reason: OTHER_REASON, count, retry_classification: null },
+	];
 });
 
 /** `GET /v1/payments/quote-requests/{id}`. */
@@ -82,7 +111,7 @@ export const statusResponseSchema = z.object({
 	/** Absent means unknown, never zero. */
 	requested_count: z.number().int().nonnegative().optional(),
 	/** Absent means the gateway could not read the auction detail. */
-	decline_summary: z.array(declineSchema).optional(),
+	decline_summary: declineSummarySchema.optional(),
 });
 export type StatusResponse = z.infer<typeof statusResponseSchema>;
 

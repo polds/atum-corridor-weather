@@ -12,7 +12,7 @@ import type {
 	RawExchange,
 	TickSlot,
 } from "../domain/types";
-import type { GatewayClient, GatewayFailure } from "./client";
+import { errorText, type GatewayClient, type GatewayFailure } from "./client";
 import { buildQuoteRequestFromListing, type QuoteRequestError } from "./quote-request";
 import type { StatusResponse } from "./schemas";
 
@@ -110,7 +110,7 @@ function finalStatus(
 		declines:
 			status.decline_summary?.map((decline) => ({
 				reason: decline.reason,
-				retryClassification: decline.retry_classification ?? null,
+				retryClassification: decline.retry_classification,
 				count: decline.count,
 			})) ?? null,
 		requestedCount: status.requested_count ?? null,
@@ -141,62 +141,77 @@ export async function runProbe(plan: ProbePlan, deps: ProbeDeps): Promise<ProbeR
 		raw,
 	});
 
-	const build = buildQuoteRequestFromListing({
-		target: plan.target,
-		listing: plan.listing,
-		identity: plan.identity,
-		requestId: plan.id,
-		nowMs: startedMs,
-		quoteWindowSeconds: deps.quoteWindowSeconds,
-	});
 	const noTimings: ProbeTimings = { createLatencyMs: null, firstQuoteMs: null, readyMs: null };
-	if (!build.ok) {
-		const message = `request not sent: ${buildErrorMessage(build.error)}`;
+	try {
+		const build = buildQuoteRequestFromListing({
+			target: plan.target,
+			listing: plan.listing,
+			identity: plan.identity,
+			requestId: plan.id,
+			nowMs: startedMs,
+			quoteWindowSeconds: deps.quoteWindowSeconds,
+		});
+		if (!build.ok) {
+			const message = `request not sent: ${buildErrorMessage(build.error)}`;
+			return record(
+				{ kind: "gateway_error", phase: "create", httpStatus: null, code: null, message },
+				noTimings,
+				null,
+			);
+		}
+
+		const sentMs = deps.now();
+		const created = await deps.gateway.createQuoteRequest(build.body);
+		raw.push(created.exchange);
+		const createLatencyMs = created.exchange.status === null ? null : created.exchange.latencyMs;
+		if (!created.ok) {
+			return record(
+				gatewayError("create", created.failure),
+				{ ...noTimings, createLatencyMs },
+				null,
+			);
+		}
+		const batch = {
+			quoteRequestId: created.value.quote_request_id,
+			idempotentReplay: created.value.idempotent_replay,
+		};
+
+		const budgetEndMs = sentMs + (deps.quoteWindowSeconds + POLL_GRACE_SECONDS) * 1000;
+		const firstSeenMs = new Map<string, number>();
+		let firstQuoteMs: number | null = null;
+		let readyMs: number | null = null;
+		for (;;) {
+			await deps.sleep(deps.pollIntervalMs);
+			const polled = await deps.gateway.getQuoteRequest(batch.quoteRequestId);
+			raw.push(polled.exchange);
+			const seenMs = deps.now();
+			const timings = { createLatencyMs, firstQuoteMs, readyMs };
+			if (!polled.ok) return record(gatewayError("poll", polled.failure), timings, batch);
+			const status = polled.value;
+			for (const quote of status.quotes) {
+				if (!firstSeenMs.has(quote.quote_id)) firstSeenMs.set(quote.quote_id, seenMs);
+			}
+			if (firstQuoteMs === null && status.quotes.length > 0) firstQuoteMs = seenMs - sentMs;
+			if (readyMs === null && status.status === "ready") readyMs = seenMs - sentMs;
+			if (status.status !== "collecting" || seenMs >= budgetEndMs) {
+				// A replayed batch was opened by an earlier run, so this run's clock measured
+				// none of its timings.
+				const replay = batch.idempotentReplay;
+				return record(
+					classifyOutcome(plan.target, finalStatus(status, replay ? null : firstSeenMs)),
+					replay ? { ...noTimings, createLatencyMs } : { createLatencyMs, firstQuoteMs, readyMs },
+					batch,
+				);
+			}
+		}
+	} catch (error) {
+		// A step that throws ends this probe, never the tick.
+		const phase = raw.length === 0 ? "create" : "poll";
+		const message = `probe failed: ${errorText(error)}`;
 		return record(
-			{ kind: "gateway_error", phase: "create", httpStatus: null, code: null, message },
+			{ kind: "gateway_error", phase, httpStatus: null, code: null, message },
 			noTimings,
 			null,
 		);
-	}
-
-	const sentMs = deps.now();
-	const created = await deps.gateway.createQuoteRequest(build.body);
-	raw.push(created.exchange);
-	const createLatencyMs = created.exchange.status === null ? null : created.exchange.latencyMs;
-	if (!created.ok) {
-		return record(gatewayError("create", created.failure), { ...noTimings, createLatencyMs }, null);
-	}
-	const batch = {
-		quoteRequestId: created.value.quote_request_id,
-		idempotentReplay: created.value.idempotent_replay,
-	};
-
-	const budgetEndMs = sentMs + (deps.quoteWindowSeconds + POLL_GRACE_SECONDS) * 1000;
-	const firstSeenMs = new Map<string, number>();
-	let firstQuoteMs: number | null = null;
-	let readyMs: number | null = null;
-	for (;;) {
-		await deps.sleep(deps.pollIntervalMs);
-		const polled = await deps.gateway.getQuoteRequest(batch.quoteRequestId);
-		raw.push(polled.exchange);
-		const seenMs = deps.now();
-		const timings = { createLatencyMs, firstQuoteMs, readyMs };
-		if (!polled.ok) return record(gatewayError("poll", polled.failure), timings, batch);
-		const status = polled.value;
-		for (const quote of status.quotes) {
-			if (!firstSeenMs.has(quote.quote_id)) firstSeenMs.set(quote.quote_id, seenMs);
-		}
-		if (firstQuoteMs === null && status.quotes.length > 0) firstQuoteMs = seenMs - sentMs;
-		if (readyMs === null && status.status === "ready") readyMs = seenMs - sentMs;
-		if (status.status !== "collecting" || seenMs >= budgetEndMs) {
-			// A replayed batch was opened by an earlier run, so this run's clock measured
-			// none of its timings.
-			const replay = batch.idempotentReplay;
-			return record(
-				classifyOutcome(plan.target, finalStatus(status, replay ? null : firstSeenMs)),
-				replay ? { ...noTimings, createLatencyMs } : { createLatencyMs, firstQuoteMs, readyMs },
-				batch,
-			);
-		}
 	}
 }

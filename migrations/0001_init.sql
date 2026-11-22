@@ -90,9 +90,12 @@ CREATE TABLE probe_raw (
 
 CREATE INDEX probe_raw_created ON probe_raw (created_at);
 
--- The published snapshot, one row per network.
+-- The published snapshot of a network, split into parts so that no value nears
+-- D1's 2 MB limit. Concatenate snapshot_json in part order to read it.
 CREATE TABLE snapshots (
-	network TEXT PRIMARY KEY,
+	network TEXT NOT NULL,
+	part INTEGER NOT NULL,
 	generated_at TEXT NOT NULL,
-	snapshot_json TEXT NOT NULL
+	snapshot_json TEXT NOT NULL,
+	PRIMARY KEY (network, part)
 );

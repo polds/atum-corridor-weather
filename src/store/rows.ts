@@ -190,6 +190,7 @@ export const snapshotSchema: z.ZodType<Snapshot, z.ZodTypeDef, unknown> = z.obje
 	generatedAt: iso,
 	tickIntervalMinutes: z.number(),
 	cadence: z.object({ probesPerTick: z.number(), sweepHours: z.number() }),
+	tiers: z.array(tier),
 	lastTick: z
 		.object({
 			slotStart: iso,
@@ -223,3 +224,5 @@ export const snapshotSchema: z.ZodType<Snapshot, z.ZodTypeDef, unknown> = z.obje
 });
 
 export const snapshotRowSchema = z.object({ snapshot_json: jsonText(snapshotSchema) });
+
+export const snapshotPartRowSchema = z.object({ snapshot_json: z.string() });

@@ -117,7 +117,7 @@ function parseBody(text: string): unknown {
 	}
 }
 
-function errorText(error: unknown): string {
+export function errorText(error: unknown): string {
 	return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
@@ -181,18 +181,17 @@ export function createGatewayClient(options: GatewayClientOptions): GatewayClien
 					},
 				};
 			}
-			const responseBody = parseBody(text);
 			const exchange: RawExchange = {
 				...base,
 				status,
 				latencyMs: options.now() - startedMs,
-				responseBody,
+				responseBody: text,
 				error: null,
 			};
-			if (response.ok) return { ok: true, value: responseBody, exchange };
+			if (response.ok) return { ok: true, value: parseBody(text), exchange };
 			const { code, message } = isRedirect(status)
 				? { code: null, message: `redirect to ${response.headers.get("location")} not followed` }
-				: describeError(responseBody);
+				: describeError(parseBody(text));
 			return { ok: false, failure: { kind: "http", status, code, message }, exchange };
 		} catch (error) {
 			const message = errorText(error);

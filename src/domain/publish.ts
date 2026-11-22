@@ -149,6 +149,7 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
 				input.tickIntervalMinutes,
 			),
 		},
+		tiers: AMOUNT_TIERS.filter((tier) => input.tierAmounts[tier] !== undefined),
 		lastTick,
 		assets: [...assets.values()].sort((a, b) => compareText(a.id, b.id)),
 		corridors,

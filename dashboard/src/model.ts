@@ -50,6 +50,7 @@ export const CONDITIONS = [
 	"stormy",
 	"unknown",
 ] as const satisfies readonly Condition[];
+/** Every tier a reading can name, in display order. `Snapshot.tiers` holds the configured ones. */
 export const TIERS = ["small", "typical", "large"] as const satisfies readonly AmountTier[];
 export const OUTCOMES = [
 	"quoted",
@@ -153,6 +154,7 @@ function isSnapshotDocument(v: unknown): v is Snapshot {
 		isRecord(v.cadence) &&
 		isCount(v.cadence.probesPerTick) &&
 		isNumber(v.cadence.sweepHours) &&
+		arrayOf(isTier)(v.tiers) &&
 		orNull(isTick)(v.lastTick) &&
 		arrayOf(isAsset)(v.assets) &&
 		arrayOf(isCorridor)(v.corridors) &&
