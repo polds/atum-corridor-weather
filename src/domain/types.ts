@@ -7,7 +7,7 @@
  */
 
 declare const brand: unique symbol;
-type Brand<T, B extends string> = T & { readonly [brand]: B };
+export type Brand<T, B extends string> = T & { readonly [brand]: B };
 
 /** CAIP-2 chain id exactly as the gateway keys it in `/v1/defaults`. */
 export type ChainId = Brand<string, "ChainId">;

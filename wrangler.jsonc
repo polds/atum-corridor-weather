@@ -26,10 +26,11 @@
 		"PROBE_ENABLED": "true",
 		"TICK_INTERVAL_MINUTES": "5",
 		"PROBES_PER_TICK": "30",
-		"AMOUNT_TIERS": "{\"small\":\"1\",\"typical\":\"25\",\"large\":\"250\"}",
+		"AMOUNT_TIERS": "{\"small\":\"1\",\"typical\":\"25\",\"large\":\"100\"}",
 		"POLL_INTERVAL_MS": "500",
 		"QUOTE_WINDOW_SECONDS": "3",
 		"SLOW_QUOTE_MS": "2500",
+		"RAW_RETENTION_DAYS": "14",
 		"CORRIDOR_FILTER": "",
 		"MAINNET_ACK": "",
 		"REPOSITORY_URL": "https://github.com/polds/atum-corridor-weather"

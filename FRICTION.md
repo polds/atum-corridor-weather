@@ -71,3 +71,10 @@ Environment for all items: `@atumlabs/payment-gateway-client` 6.0.0, testnet gat
 - Expected: the quote request reference to say which encoding each address field takes on each chain.
 - Happened: for a Tron source, SDK 6.0.0 sends `quote_selector` and `fulfillment_verifier.account` as lower-case `0x` hex of the 20-byte address, while `source.account` and `escrow_contract_address` stay base58. `/v1/defaults` returns all of them as base58. This only shows up by comparing the SDK's output with the defaults.
 - Would help: a table of address encodings per field and chain family in the Create a quote-request reference.
+
+## 12. Building an unsigned quote request body needs the whole SDK
+
+- Expected: a way to build the `POST /v1/payments/quote-requests` body without signing code, since the body carries no signature.
+- Happened: `prepareQuoteRequest` lives in the main entry, which loads ethers, axios, `@solana/web3.js` and jsonld. Under `@cloudflare/vitest-pool-workers` 0.23 the import fails before any call (`The requested module 'ws' does not provide an export named 'WebSocket'`, from ethers).
+- Workaround: Corridor Weather builds the body with its own pure function and checks it against `prepareQuoteRequest` in a Node test, for every corridor in the testnet and mainnet defaults fixtures.
+- Would help: a dependency-free builder entry point, such as `@atumlabs/payment-gateway-client/quote-request`.
