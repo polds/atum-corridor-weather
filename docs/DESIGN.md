@@ -93,12 +93,19 @@ The first write wins in the store. A retried run leaves the rows of the first ru
 
 ### Bounded inputs
 
-The gateway is outside the trust boundary, so its answers are bounded before they are kept.
+The gateway is outside the trust boundary. `src/gateway/schemas.ts` and `src/gateway/client.ts` bound everything it sends before the rest of the code sees it.
 
+- The client never follows a redirect. A 3xx answer is a failed call.
 - The client reads at most 256 KiB of a response. A longer one is recorded as a failed call with no body.
+- A response body is kept as the text the gateway sent. The Worker never serializes parsed gateway JSON again, so deep nesting cannot overflow the stack.
 - One probe keeps at most 900 KiB of raw exchanges. Past that, the store cuts the response bodies between the first and the last exchange, then those two.
+- A `quote_request_id` must match `[A-Za-z0-9._-]{1,128}`. A token symbol must match `[\w.-]{1,20}`. A token with any other symbol is dropped.
+- A decline reason is published only when it is a code of at most 48 characters with no long run of hex digits. Any other reason is published as `OTHER`. A response keeps at most 50 decline entries.
 - `GATEWAY_URL` must be the gateway of the configured network, or a loopback address for local runs. A testnet deployment cannot be pointed at mainnet by changing the URL.
 - A `/v1/defaults` answer with no usable chain is a failed discovery. It aborts the tick and raises `gateway_errors`.
+- A probe that throws is recorded as a `gateway_error`. It does not stop the tick.
+
+The store splits the snapshot across rows, so its size does not depend on D1's 2 MB value limit.
 
 ### Platform limits
 
@@ -136,7 +143,7 @@ The account is the durable marker, because operators see the request body and no
 
 ### 4. Is publishing mainnet operator addresses and prices fine?
 
-Needs a person, and legal. Until it is answered, the public snapshot carries no operator address. It carries the count of distinct operators and the best and worst price. Addresses stay in `probe_raw`. Mainnet also needs an explicit switch: the Worker refuses `NETWORK=mainnet` unless `MAINNET_ACK` is set to `cadence-and-publishing-agreed`.
+Needs a person, and legal. Until it is answered, the public snapshot carries no operator address. It carries the count of distinct operators and the best and worst price. Addresses stay in `probe_raw`. A decline reason that is not a plain code, or that holds a long run of hex digits, is published as `OTHER`. Mainnet also needs an explicit switch: the Worker refuses `NETWORK=mainnet` unless `MAINNET_ACK` is set to `cadence-and-publishing-agreed`.
 
 ### 5. What does an empty quotes list with an empty decline summary mean?
 

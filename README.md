@@ -26,7 +26,7 @@ A corridor is a source token on one chain and a destination token on another. A 
 4. It stores every probe in D1, with its raw HTTP exchanges.
 5. It rebuilds the public snapshot and the alert list.
 
-Each probe ends in one outcome: `quoted`, `declined`, `silent`, `incomplete`, or `gateway_error`. The store keeps the quotes, the decline reasons, the timings, and the raw responses. The public snapshot shows the number of distinct operators and the best and worst price. It does not show operator addresses.
+Each probe ends in one outcome: `quoted`, `declined`, `silent`, `incomplete`, or `gateway_error`. The store keeps the quotes, the decline reasons, the timings, and the raw responses. A decline reason that is not a plain code is kept as `OTHER`. The public snapshot shows the number of distinct operators and the best and worst price. It does not show operator addresses.
 
 ## Probe traffic, for settlement operators
 

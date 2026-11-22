@@ -277,7 +277,7 @@ curl -s "$WORKER_URL/api/v1/corridors/$id/history.json" | jq '.points[-5:]'
 
 ## Read raw probe data from D1
 
-The tables are `ticks`, `corridors`, `probes`, `probe_declines`, `probe_raw`, and `snapshots`. `probe_raw` keeps the HTTP exchanges of each probe. Response bodies are cut when one probe passes 900 KiB. Read the columns from the database itself, because migrations can change them.
+The tables are `ticks`, `corridors`, `probes`, `probe_declines`, `probe_raw`, and `snapshots`. `probe_raw` keeps the HTTP exchanges of each probe. Each response body is the text the gateway sent, so read it with `json_extract` after parsing the string. Response bodies are cut when one probe passes 900 KiB. `snapshots` holds the snapshot in parts. Concatenate `snapshot_json` in `part` order. Read the columns from the database itself, because migrations can change them.
 
 1. Print the schema of every table.
 
