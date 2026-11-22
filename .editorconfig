@@ -1,0 +1,14 @@
+root = true
+
+# Matches biome.json: tabs, LF, a final newline.
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = tab
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# YAML does not allow tabs.
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2

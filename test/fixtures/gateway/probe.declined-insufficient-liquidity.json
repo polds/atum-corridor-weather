@@ -1,0 +1,193 @@
+{
+ "body": {
+  "version": "1.3",
+  "request_id": "cw-dev-arb-base-usdc-10k",
+  "source": {
+   "asset_identifier": "eip155:421614/erc20:0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d",
+   "account": "0xD5C4D0bbcC3f01886cb1E8E29BB348776892270F"
+  },
+  "destination": [
+   {
+    "asset_identifier": "eip155:84532/erc20:0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+    "account": "0xD5C4D0bbcC3f01886cb1E8E29BB348776892270F"
+   }
+  ],
+  "fulfillment_amount": "10000000000",
+  "quote_deadline": "2026-11-22T10:37:56.728Z",
+  "fulfillment_deadline": "2026-11-22T10:42:53.728Z",
+  "escrow_contract_address": "0x0F875601504C9179562506AFa34b2D084268869b",
+  "quote_selector": "0xD5C4D0bbcC3f01886cb1E8E29BB348776892270F",
+  "fulfillment_verifier": {
+   "account": "0x27050EE47befC43F4dF7807a7AA8073039e5fa89",
+   "endpoint": "https://veri-fill-382477456811.us-central1.run.app"
+  },
+  "fulfillment_proxy": "0xd1254EF0f2bc75AD577FE48fC5CC9c3ec13B0144"
+ },
+ "events": [
+  {
+   "t": 54,
+   "status": 202,
+   "headers": {
+    "x-ratelimit-limit": "30",
+    "x-ratelimit-remaining": "29",
+    "x-ratelimit-reset": "0",
+    "x-request-id": "26c831ce-6fbf-4522-bd3d-fae4e31f1204"
+   },
+   "json": {
+    "destination": [
+     {
+      "account": "0xD5C4D0bbcC3f01886cb1E8E29BB348776892270F",
+      "asset_identifier": "eip155:84532/erc20:0x036cbd53842c5426634e7929541ec2318f3dcf7e"
+     }
+    ],
+    "fulfillment_amount": "10000000000",
+    "fulfillment_deadline": "2026-11-22T10:42:53.728Z",
+    "idempotent_replay": false,
+    "quote_deadline": "2026-11-22T10:37:56.728Z",
+    "quote_request_id": "qr_01a202d5-76e9-7dbe-aa98-9df4a6525737",
+    "source": {
+     "account": "0xD5C4D0bbcC3f01886cb1E8E29BB348776892270F",
+     "asset_identifier": "eip155:421614/erc20:0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d"
+    },
+    "status": "collecting"
+   }
+  },
+  {
+   "t": 583,
+   "status": 200,
+   "headers": {
+    "x-ratelimit-limit": "30",
+    "x-ratelimit-remaining": "29",
+    "x-ratelimit-reset": "0",
+    "x-request-id": "105f7bb4-ff6a-48ad-817a-1e70ae386fe6"
+   },
+   "json": {
+    "decline_summary": [],
+    "quote_request_id": "qr_01a202d5-76e9-7dbe-aa98-9df4a6525737",
+    "quotes": [],
+    "requested_count": 1,
+    "status": "collecting"
+   }
+  },
+  {
+   "t": 1116,
+   "status": 200,
+   "headers": {
+    "x-ratelimit-limit": "30",
+    "x-ratelimit-remaining": "28",
+    "x-ratelimit-reset": "0",
+    "x-request-id": "27f381cd-2b5e-40d8-98cd-6d815aba758e"
+   },
+   "json": {
+    "decline_summary": [
+     {
+      "count": 1,
+      "docs_url": "https://docs.atum.xyz/decline-reasons#insufficient-liquidity",
+      "reason": "INSUFFICIENT_LIQUIDITY",
+      "retry_classification": "RETRY_AFTER_DELAY"
+     }
+    ],
+    "quote_request_id": "qr_01a202d5-76e9-7dbe-aa98-9df4a6525737",
+    "quotes": [],
+    "requested_count": 1,
+    "status": "collecting"
+   }
+  },
+  {
+   "t": 1660,
+   "status": 200,
+   "headers": {
+    "x-ratelimit-limit": "30",
+    "x-ratelimit-remaining": "27",
+    "x-ratelimit-reset": "0",
+    "x-request-id": "3c78ae99-4264-4bc0-8993-f5aa2ecac273"
+   },
+   "json": {
+    "decline_summary": [
+     {
+      "count": 1,
+      "docs_url": "https://docs.atum.xyz/decline-reasons#insufficient-liquidity",
+      "reason": "INSUFFICIENT_LIQUIDITY",
+      "retry_classification": "RETRY_AFTER_DELAY"
+     }
+    ],
+    "quote_request_id": "qr_01a202d5-76e9-7dbe-aa98-9df4a6525737",
+    "quotes": [],
+    "requested_count": 1,
+    "status": "collecting"
+   }
+  },
+  {
+   "t": 2190,
+   "status": 200,
+   "headers": {
+    "x-ratelimit-limit": "30",
+    "x-ratelimit-remaining": "26",
+    "x-ratelimit-reset": "0",
+    "x-request-id": "31f125b0-0b19-44f8-be0e-af71c1d530d7"
+   },
+   "json": {
+    "decline_summary": [
+     {
+      "count": 1,
+      "docs_url": "https://docs.atum.xyz/decline-reasons#insufficient-liquidity",
+      "reason": "INSUFFICIENT_LIQUIDITY",
+      "retry_classification": "RETRY_AFTER_DELAY"
+     }
+    ],
+    "quote_request_id": "qr_01a202d5-76e9-7dbe-aa98-9df4a6525737",
+    "quotes": [],
+    "requested_count": 1,
+    "status": "collecting"
+   }
+  },
+  {
+   "t": 2718,
+   "status": 200,
+   "headers": {
+    "x-ratelimit-limit": "30",
+    "x-ratelimit-remaining": "25",
+    "x-ratelimit-reset": "0",
+    "x-request-id": "60b0dc69-68ab-4ff5-a33d-95db00274bd2"
+   },
+   "json": {
+    "decline_summary": [
+     {
+      "count": 1,
+      "docs_url": "https://docs.atum.xyz/decline-reasons#insufficient-liquidity",
+      "reason": "INSUFFICIENT_LIQUIDITY",
+      "retry_classification": "RETRY_AFTER_DELAY"
+     }
+    ],
+    "quote_request_id": "qr_01a202d5-76e9-7dbe-aa98-9df4a6525737",
+    "quotes": [],
+    "requested_count": 1,
+    "status": "collecting"
+   }
+  },
+  {
+   "t": 3246,
+   "status": 200,
+   "headers": {
+    "x-ratelimit-limit": "30",
+    "x-ratelimit-remaining": "24",
+    "x-ratelimit-reset": "0",
+    "x-request-id": "509d3e33-8818-4d14-a5e7-f97577452538"
+   },
+   "json": {
+    "decline_summary": [
+     {
+      "count": 1,
+      "docs_url": "https://docs.atum.xyz/decline-reasons#insufficient-liquidity",
+      "reason": "INSUFFICIENT_LIQUIDITY",
+      "retry_classification": "RETRY_AFTER_DELAY"
+     }
+    ],
+    "quote_request_id": "qr_01a202d5-76e9-7dbe-aa98-9df4a6525737",
+    "quotes": [],
+    "requested_count": 1,
+    "status": "ready"
+   }
+  }
+ ]
+}

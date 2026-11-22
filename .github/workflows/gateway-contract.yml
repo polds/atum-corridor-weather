@@ -1,0 +1,60 @@
+name: Gateway contract
+
+# Once a week, checks that the testnet GET /v1/defaults still has the shape the prober reads.
+# The script sends one GET request and no quote request.
+on:
+  schedule:
+    - cron: "41 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Check GET /v1/defaults
+        run: node .github/scripts/check-gateway-contract.mjs | tee "$RUNNER_TEMP/contract.txt"
+
+      - name: Open or update the drift issue
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: Gateway contract drift
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="$RUNNER_TEMP/issue.md"
+          {
+            echo "The gateway contract check failed: $RUN_URL"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/contract.txt" 2>/dev/null || echo "The check printed no output."
+            echo '```'
+            echo
+            echo "The prober reads these fields from GET /v1/defaults. See .github/scripts/check-gateway-contract.mjs."
+          } >"$body"
+
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TITLE\"" \
+            --json number,title | jq -r --arg title "$TITLE" '.[] | select(.title == $title) | .number' | head -n 1)
+
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file "$body"
+          fi
