@@ -1,0 +1,8 @@
+ts	phase	decision	why	evidence	result
+2026-11-22T10:44:13Z	setup	installed pstack 0.15.46 at user scope, declared it in .claude/settings.json, added an environment setup script	the plugin has to survive a fresh container and reach anyone who clones the repo	.claude/settings.json, environment polds setup script	installed; Skill tool does not hot-load it, so skills are read from disk this session
+2026-11-22T10:44:13Z	frame	rendered the brief in headless Chromium	the page is client-rendered and curl returned an empty shell	scratchpad brief.txt	brief read in full
+2026-11-22T10:44:13Z	frame	prototyped the SDK inside a Worker before fixing the design	the brief requires SDK 6.0.0 and nobody had run it on workerd	FRICTION.md item 1	SDK transport fails on workerd; offline build with injected transport works in 5 ms, 680 KiB gzip
+2026-11-22T10:44:13Z	frame	sent three tagged testnet quote requests from keyless accounts	open questions 2, 5 and 6 need a real response to answer	test/fixtures/gateway/probe.*.json	1 USDC quoted at 2 bps; 10000 USDC declined INSUFFICIENT_LIQUIDITY; tron to solana declined INTERNAL
+2026-11-22T10:44:13Z	design	chose one Worker with D1 over a raw log in R2 plus a view store	one owner per piece of state and one row read per page view	docs/DESIGN.md Shape	open
+2026-11-22T10:44:13Z	design	kept operator addresses out of the public snapshot	publishing them is an unanswered legal question	src/domain/snapshot.ts	open
+2026-11-22T10:44:13Z	scaffold	switched from npm to pnpm	npm 10.9 crashes resolving vitest in this container, with or without the SDK	pnpm-lock.yaml	install works

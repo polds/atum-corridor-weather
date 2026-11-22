@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "corridor-weather",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "assets": { "directory": "dist/dashboard", "binding": "ASSETS", "run_worker_first": ["/api/*", "/metrics"] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "corridor-weather",
+      // Replace with the id that `wrangler d1 create corridor-weather` prints. See docs/RUNBOOK.md.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "NETWORK": "testnet",
+    "GATEWAY_URL": "https://payment-gw.production-testnet.atum.xyz",
+    "PROBE_ENABLED": "true",
+    "TICK_INTERVAL_MINUTES": "5",
+    "PROBES_PER_TICK": "30",
+    "AMOUNT_TIERS": "{\"small\":\"1\",\"typical\":\"25\",\"large\":\"250\"}",
+    "POLL_INTERVAL_MS": "500",
+    "QUOTE_WINDOW_SECONDS": "3",
+    "SLOW_QUOTE_MS": "2500",
+    "CORRIDOR_FILTER": "",
+    "MAINNET_ACK": "",
+    "REPOSITORY_URL": "https://github.com/polds/atum-corridor-weather"
+  }
+}
