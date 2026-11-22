@@ -8,14 +8,14 @@ Environment for all items: `@atumlabs/payment-gateway-client` 6.0.0, testnet gat
 
 - Expected: `client.prepareQuoteRequest(...)` works in a Worker with `nodejs_compat`. The package says `engines: node >= 18` and names no runtime limits.
 - Happened: every call fails with `Failed to fetch defaults for chain eip155:421614: Unsupported cache mode: default`. The bundled axios picks its fetch adapter and passes a `cache` option that `workerd` rejects (wrangler 4.166.0, compatibility date 2026-11-01).
-- Workaround: pass a custom `HttpRequest` class as the second constructor argument and send requests with `fetch`.
+- Workaround: none taken in production. The Worker does not load the SDK. It builds the request body itself and a test compares that body with the SDK's. Passing a custom `HttpRequest` class as the second constructor argument also works, and the test does that.
 - Would help: a note on supported runtimes, or a fetch-based transport.
 
 ## 2. `prepareQuoteRequest` cannot build offline
 
 - Expected: a `resolvedDefaults` parameter, as `preparePaymentRequest` and `prepareDirectDepositRequest` have.
 - Happened: `prepareQuoteRequest` always fetches `/v1/defaults` twice, once per chain. A prober that already holds the full defaults listing pays two extra calls per quote.
-- Workaround: the same custom `HttpRequest` class answers `/v1/defaults` from memory. `BaseHttpRequest` and `HttpRequestConstructor` are not exported, so the class is written against the structural type.
+- Workaround: in the conformance test, a custom `HttpRequest` class answers `/v1/defaults` from memory. `BaseHttpRequest` and `HttpRequestConstructor` are not exported, so the class is written against the structural type.
 - Would help: `resolvedDefaults` on `prepareQuoteRequest`, and exported transport types.
 
 ## 3. `/v1/defaults` lists the Solana chain id in lower case
@@ -65,3 +65,9 @@ Environment for all items: `@atumlabs/payment-gateway-client` 6.0.0, testnet gat
 - Expected: one list.
 - Happened: the quote guide lists `collecting`, `ready` and `expired`. The API reference adds `awarded`.
 - Would help: the same list on both pages.
+
+## 11. A Tron source changes two address encodings, and no page says so
+
+- Expected: the quote request reference to say which encoding each address field takes on each chain.
+- Happened: for a Tron source, SDK 6.0.0 sends `quote_selector` and `fulfillment_verifier.account` as lower-case `0x` hex of the 20-byte address, while `source.account` and `escrow_contract_address` stay base58. `/v1/defaults` returns all of them as base58. This only shows up by comparing the SDK's output with the defaults.
+- Would help: a table of address encodings per field and chain family in the Create a quote-request reference.

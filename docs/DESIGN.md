@@ -31,7 +31,7 @@ The Worker also serves the dashboard and four read-only endpoints.
 The design removes the ability to spend. It does not rely on care.
 
 - The gateway client has three operations: read defaults, create a quote request, and read a quote request. It refuses every other path before it sends anything. There is no award call.
-- The quote request body has no `sender_auth` field. The builder output is checked for it in tests.
+- The quote request body has no `sender_auth` field. The builder's return type cannot hold one, and tests check the output.
 - The probe accounts have no private key. Each address is derived from the hash of the public label `corridor-weather-probe/v1`, so no key for it exists. Run `pnpm run probe-identity` to reproduce the addresses.
 - The Worker holds no secret. Its bindings are one D1 database and the static assets.
 
@@ -58,14 +58,26 @@ dashboard/     The static page. It imports the snapshot types from src/domain/sn
 
 The dependency direction is one way. `domain` imports nothing. `gateway` and `store` import `domain`. `worker` wires them together.
 
-### The SDK builds the request, the Worker sends it
+### The Worker builds the request, the SDK checks it
 
-The brief requires `@atumlabs/payment-gateway-client` 6.0.0 or later so that `quote_selector` is the depositor and not the gateway's own selector. The SDK's HTTP layer does not run on Cloudflare Workers ([FRICTION.md](../FRICTION.md), item 1). So the two jobs are split.
+The brief requires `@atumlabs/payment-gateway-client` 6.0.0 or later so that `quote_selector` is the depositor and not the gateway's own selector. Two ways to meet that were tried.
 
-- `prepareQuoteRequest` from the SDK builds the body. The Worker gives the SDK a transport that answers `/v1/defaults` from the copy the tick already fetched. The SDK makes no network call.
-- The Worker sends the body with `fetch`. It needs its own transport anyway, to time each call, keep the raw response, set a `User-Agent`, and read rate-limit headers.
+| | SDK inside the Worker | Wire format in the Worker, SDK in tests |
+| --- | --- | --- |
+| Worker bundle | 680 KiB gzipped: the SDK brings axios, ethers and the Solana client | The prober's own code only |
+| Runs on `workerd` | Only with a hand-written transport, because the SDK's HTTP layer fails there ([FRICTION.md](../FRICTION.md), item 1) | Yes, plain `fetch` |
+| Couples to SDK internals | Yes, to an unexported transport type | No |
+| Who decides `quote_selector` | The SDK, at run time | The prober, checked against the SDK on every test run |
 
-This was proven in a throwaway Worker before the design was fixed. The SDK builds a body in about 5 ms under `workerd`. The bundle is 680 KiB gzipped.
+The second is the choice. It is the pattern [tip-me-a-coffee](https://github.com/polds/tip-me-a-coffee) uses: the Worker speaks the wire format as pure functions over `fetch`, and the real SDK is the counterparty in tests.
+
+- `src/gateway/quote-request.ts` builds the body. It is a pure function of the probe target, the defaults and the time.
+- A conformance test builds the same request with the SDK's `prepareQuoteRequest` and requires the two bodies to be equal, for every pair of chain families. The test also fails if the installed SDK is older than 6.0.0.
+- The builder refuses to produce a body whose `quote_selector` is the gateway's own selector.
+
+A quote request body is a copy of fields from `/v1/defaults`, with one exception that the conformance test pins. For a Tron source, the SDK sends `quote_selector` and the verifier account as hex, not as base58 addresses.
+
+The brief's rule is met in its purpose, which is a correct `quote_selector`, and not in its letter: the SDK does not run in production. A new SDK release that changes the body fails the conformance test when the dependency is updated.
 
 ### A probe is a small state machine
 
