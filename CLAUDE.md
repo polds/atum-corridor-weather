@@ -31,13 +31,14 @@ Use pnpm. `npm install` fails on this dependency tree.
 - `src/store/` is the only code that talks to D1.
 - `dashboard/` imports types from `src/domain/snapshot.ts` and nothing else from `src/`.
 
-## pstack
+## Agent tooling
 
-This repository uses the [pstack](https://github.com/cursor/plugins/tree/main/pstack) plugin. `.claude/settings.json` declares it. If `/pstack:poteto-mode` is not available, install it:
+- Plugin `pstack@cursor-plugins` is enabled in `.claude/settings.json`.
+- pstack per-role models live in `.claude/rules/pstack-models.md`. Re-run `/pstack:setup-pstack` to change them.
+- Start non-trivial work with `/pstack:poteto-mode`.
+- If the plugin is missing, install it. A plugin installed during a session loads in the next session.
 
 ```
 /plugin marketplace add cursor/plugins
 /plugin install pstack@cursor-plugins
 ```
-
-Start non-trivial work with `/pstack:poteto-mode`. A plugin installed during a session loads in the next session. Until then, read the skill files under `~/.claude/plugins/cache/cursor-plugins/pstack/*/skills/` and follow them.
