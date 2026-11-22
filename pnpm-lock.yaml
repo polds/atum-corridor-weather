@@ -8,42 +8,39 @@ importers:
 
   .:
     dependencies:
-      '@atumlabs/payment-gateway-client':
-        specifier: ^6.0.0
-        version: 6.0.0(bufferutil@4.2.0)(typescript@5.9.3)(utf-8-validate@6.1.0)(web-streams-polyfill@3.3.3)
       zod:
-        specifier: ^3.25.76
+        specifier: 3.25.76
         version: 3.25.76
     devDependencies:
+      '@atumlabs/payment-gateway-client':
+        specifier: 6.0.0
+        version: 6.0.0(bufferutil@4.2.0)(typescript@5.9.3)(utf-8-validate@6.1.0)(web-streams-polyfill@3.3.3)
       '@biomejs/biome':
-        specifier: ^2.6.8
+        specifier: 2.6.8
         version: 2.6.8
       '@cloudflare/vitest-pool-workers':
-        specifier: ^0.23.0
+        specifier: 0.23.0
         version: 0.23.0(@cloudflare/workers-types@5.20261121.1)(@vitest/runner@4.1.12)(@vitest/snapshot@4.1.12)(bufferutil@4.2.0)(utf-8-validate@6.1.0)(vitest@4.1.12)
       '@cloudflare/workers-types':
-        specifier: ^5.20261121.1
+        specifier: 5.20261121.1
         version: 5.20261121.1
       '@vitest/coverage-istanbul':
-        specifier: ^4.1.12
+        specifier: 4.1.12
         version: 4.1.12(vitest@4.1.12)
       esbuild:
-        specifier: ^0.28.2
+        specifier: 0.28.2
         version: 0.28.2
       ethers:
-        specifier: ^6.17.0
+        specifier: 6.17.0
         version: 6.17.0(bufferutil@4.2.0)(utf-8-validate@6.1.0)
       typescript:
-        specifier: ^5.9.3
+        specifier: 5.9.3
         version: 5.9.3
-      uplot:
-        specifier: ^1.6.32
-        version: 1.6.32
       vitest:
-        specifier: ^4.1.12
+        specifier: 4.1.12
         version: 4.1.12(@types/node@26.6.6)(@vitest/coverage-istanbul@4.1.12)(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2))
       wrangler:
-        specifier: ^4.166.0
+        specifier: 4.166.0
         version: 4.166.0(@cloudflare/workers-types@5.20261121.1)(@types/node@26.6.6)(bufferutil@4.2.0)(utf-8-validate@6.1.0)(vitest@4.1.12)
 
 packages:
@@ -1893,9 +1890,6 @@ packages:
     hasBin: true
     peerDependencies:
       browserslist: '>= 4.21.0'
-
-  uplot@1.6.32:
-    resolution: {integrity: sha512-KIMVnG68zvu5XXUbC4LQEPnhwOxBuLyW1AHtpm6IKTXImkbLgkMy+jabjLgSLMasNuGGzQm/ep3tOkyTxpiQIw==}
 
   utf-8-validate@6.1.0:
     resolution: {integrity: sha512-+VqK0s7hdUuvL95ExzfqCqvsuA2A+3KzNYibPeeDnGU9L5onk8CY5/H30kCHLpVMzEh6HV9Dv8uw+E+Mz4X/dA==}
@@ -3747,8 +3741,6 @@ snapshots:
       browserslist: 4.29.6
       escalade: 3.2.0
       picocolors: 1.1.1
-
-  uplot@1.6.32: {}
 
   utf-8-validate@6.1.0:
     dependencies:
