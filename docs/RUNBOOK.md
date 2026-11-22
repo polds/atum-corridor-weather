@@ -79,7 +79,7 @@ Do not deploy before DESIGN.md question 1 has an answer. The default rate sends 
     gh run watch
     ```
 
-From then on, the **Deploy** workflow runs after every **CI** run that passes on a push to `main`. It deploys the commit that CI tested. It checks that `wrangler.jsonc` sets `NETWORK` to `testnet`, applies the D1 migrations, and runs `wrangler deploy`. When the two secrets are missing, as on a fork, the job ends with a "Deploy skipped" notice and deploys nothing.
+From then on, the **Deploy** workflow runs after every **CI** run that passes on a push to `main`. It deploys the commit that CI tested. It checks that `wrangler.jsonc` sets `NETWORK` to `testnet`, that `GATEWAY_URL` is the testnet gateway, that `MAINNET_ACK` is empty and that no other Wrangler config file exists. It then applies the D1 migrations and runs `wrangler deploy`. When the two secrets are missing, as on a fork, the job ends with a "Deploy skipped" notice and deploys nothing.
 
 A deploy from your own machine skips the workflow's testnet check. Read `wrangler.jsonc` before you run `wrangler deploy` by hand.
 
@@ -261,12 +261,12 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
 
 ## What each alert means
 
-| Alert            | Severity | Fires when                                                                    | Check first                                                                                                                                                                             |
-| ---------------- | -------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prober_stale`   | Critical | No tick finished within three intervals                                       | Run `pnpm exec wrangler tail corridor-weather` through one tick and look for an exception. Run `pnpm exec wrangler deployments list` to see whether a recent deploy changed the Worker. |
-| `gateway_errors` | Critical | Discovery failed, or half or more of the probes in a tick were gateway errors | Read `lastTick` in `/api/v1/snapshot.json`. `aborted` names the reason when a tick stopped early, and `gatewayErrors` counts the failed probes.                                         |
-| `quotes_lost`    | Critical | A corridor tier was quoted on its previous probe and is not quoted now        | Read the corridor history. Its outcome and decline reasons, for example `INSUFFICIENT_LIQUIDITY`, say what the operators answered.                                                      |
-| `slow_quotes`    | Warning  | The time to the first quote is above `SLOW_QUOTE_MS`                          | Compare `firstQuoteMs` across corridors in `/api/v1/snapshot.json` to see whether one corridor or all of them are slow.                                                                 |
+| Alert            | Severity | Fires when                                                                                              | Check first                                                                                                                                                                             |
+| ---------------- | -------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prober_stale`   | Critical | No tick finished within three intervals                                                                 | Run `pnpm exec wrangler tail corridor-weather` through one tick and look for an exception. Run `pnpm exec wrangler deployments list` to see whether a recent deploy changed the Worker. |
+| `gateway_errors` | Critical | Discovery failed or listed no usable chain, or half or more of the probes in a tick were gateway errors | Read `lastTick` in `/api/v1/snapshot.json`. `aborted` names the reason when a tick stopped early, and `gatewayErrors` counts the failed probes.                                         |
+| `quotes_lost`    | Critical | A corridor tier was quoted on its previous probe and is not quoted now                                  | Read the corridor history. Its outcome and decline reasons, for example `INSUFFICIENT_LIQUIDITY`, say what the operators answered.                                                      |
+| `slow_quotes`    | Warning  | The time to the first quote is above `SLOW_QUOTE_MS`                                                    | Compare `firstQuoteMs` across corridors in `/api/v1/snapshot.json` to see whether one corridor or all of them are slow.                                                                 |
 
 To read the history of a corridor, URL-encode its id.
 
@@ -277,7 +277,7 @@ curl -s "$WORKER_URL/api/v1/corridors/$id/history.json" | jq '.points[-5:]'
 
 ## Read raw probe data from D1
 
-The tables are `ticks`, `corridors`, `probes`, `probe_declines`, `probe_raw`, and `snapshots`. `probe_raw` keeps every HTTP exchange verbatim. Read the columns from the database itself, because migrations can change them.
+The tables are `ticks`, `corridors`, `probes`, `probe_declines`, `probe_raw`, and `snapshots`. `probe_raw` keeps the HTTP exchanges of each probe. Response bodies are cut when one probe passes 900 KiB. Read the columns from the database itself, because migrations can change them.
 
 1. Print the schema of every table.
 

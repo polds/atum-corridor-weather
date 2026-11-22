@@ -13,7 +13,7 @@ A Cloudflare Worker runs on a cron schedule. Each run is a tick. A tick does fiv
 1. It reads `GET /v1/defaults` and builds the corridor list from the chains and tokens the gateway returns.
 2. It picks the next batch of probe targets. A probe target is one corridor at one amount tier.
 3. It opens one quote request per target and polls the status endpoint until the quote window closes.
-4. It stores every probe, with every raw HTTP exchange, in D1.
+4. It stores every probe, with its raw HTTP exchanges, in D1.
 5. It rebuilds the public snapshot and the alert list from the store.
 
 The Worker also serves the dashboard and four read-only endpoints.
@@ -30,7 +30,7 @@ The Worker also serves the dashboard and four read-only endpoints.
 
 The design removes the ability to spend. It does not rely on care.
 
-- The gateway client has three operations: read defaults, create a quote request, and read a quote request. It refuses every other path before it sends anything. There is no award call.
+- The gateway client has three operations: read defaults, create a quote request, and read a quote request. It refuses every other path before it sends anything, and it never follows a redirect. There is no award call.
 - The quote request body has no `sender_auth` field. The builder's return type cannot hold one, and tests check the output.
 - The probe accounts have no private key. Each address is derived from the hash of the public label `corridor-weather-probe/v1`, so no key for it exists. Run `pnpm run probe-identity` to reproduce the addresses.
 - The Worker holds no secret. Its bindings are one D1 database and the static assets.
@@ -46,7 +46,7 @@ Two shapes were sketched.
 | Recompute later  | Yes, raw exchanges are kept in `probe_raw` | Yes                                             |
 | Moving parts     | 1 Worker, 1 D1                             | 1 Worker, R2, plus a view store                 |
 
-Shape A is the choice. It keeps one owner for each piece of state and still keeps every raw response. Moving `probe_raw` to R2 later is a storage change, not a redesign.
+Shape A is the choice. It keeps one owner for each piece of state and still keeps the raw responses. Moving `probe_raw` to R2 later is a storage change, not a redesign.
 
 ```
 src/domain/    Pure logic. Corridors, amounts, schedule, spread, outcome, conditions, alerts, snapshot.
@@ -87,7 +87,18 @@ The brief's rule is met in its purpose, which is a correct `quote_selector`, and
 
 The target list is every corridor at every tier, sorted by id. Slot `n` probes `PROBES_PER_TICK` targets starting at offset `n * PROBES_PER_TICK` modulo the list length. The slot index is `floor(now / interval)`. No cursor is stored.
 
-The `request_id` of a probe is `cw1.{network}.{slotStart}.{corridorHash}.{tier}`. A retried cron run produces the same ids. The gateway then returns the original batch with `idempotent_replay: true` and does not broadcast to operators a second time. Store writes are upserts keyed by the same id.
+The `request_id` of a probe is `cw1.{network}.{slotStart}.{corridorHash}.{tier}`. A retried cron run produces the same ids. The gateway then returns the original batch with `idempotent_replay: true` and does not broadcast to operators a second time.
+
+The first write wins in the store. A retried run leaves the rows of the first run as they were, so a replay cannot overwrite a measurement. When the first run died before it stored anything, the retry stores the replayed batch without timings and without a price hold, because the retry did not measure them.
+
+### Bounded inputs
+
+The gateway is outside the trust boundary, so its answers are bounded before they are kept.
+
+- The client reads at most 256 KiB of a response. A longer one is recorded as a failed call with no body.
+- One probe keeps at most 900 KiB of raw exchanges. Past that, the store cuts the response bodies between the first and the last exchange, then those two.
+- `GATEWAY_URL` must be the gateway of the configured network, or a loopback address for local runs. A testnet deployment cannot be pointed at mainnet by changing the URL.
+- A `/v1/defaults` answer with no usable chain is a failed discovery. It aborts the tick and raises `gateway_errors`.
 
 ### Platform limits
 
@@ -150,12 +161,12 @@ A corridor's condition comes from the latest probe of each tier.
 
 The condition does not rank operators and does not depend on who quoted.
 
-| Alert            | Fires when                                                               | Severity |
-| ---------------- | ------------------------------------------------------------------------ | -------- |
-| `prober_stale`   | No tick finished within three intervals                                  | Critical |
-| `gateway_errors` | Discovery failed, or half or more of a tick's probes were gateway errors | Critical |
-| `quotes_lost`    | A corridor tier was quoted on its previous probe and is not quoted now   | Critical |
-| `slow_quotes`    | Time to first quote is above `SLOW_QUOTE_MS`                             | Warning  |
+| Alert            | Fires when                                                                                         | Severity |
+| ---------------- | -------------------------------------------------------------------------------------------------- | -------- |
+| `prober_stale`   | No tick finished within three intervals                                                            | Critical |
+| `gateway_errors` | Discovery failed or listed no usable chain, or half or more of a tick's probes were gateway errors | Critical |
+| `quotes_lost`    | A corridor tier was quoted on its previous probe and is not quoted now                             | Critical |
+| `slow_quotes`    | Time to first quote is above `SLOW_QUOTE_MS`                                                       | Warning  |
 
 `/api/v1/health` returns `503` when a critical alert is active. A monitor only needs an HTTP check on that path. The public page shows alerts but pages nobody.
 

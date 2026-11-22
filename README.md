@@ -11,7 +11,7 @@ Corridor Weather sends small, tagged quote requests to the Atum testnet payment 
 
 The design removes the ability to spend, for four structural reasons. [docs/DESIGN.md](docs/DESIGN.md#why-it-cannot-move-funds) has the details.
 
-- The gateway client has three operations: read defaults, create a quote request, and read a quote request. It refuses every other path before it sends anything. There is no award call.
+- The gateway client has three operations: read defaults, create a quote request, and read a quote request. It refuses every other path before it sends anything, and it never follows a redirect. There is no award call.
 - The quote request body has no `sender_auth` field. Tests check the builder output for it.
 - The probe accounts have no private key. Each address comes from the hash of the public label `corridor-weather-probe/v1`, so no key for it exists.
 - The Worker holds no secret. Its only bindings are one D1 database and the static assets.
@@ -23,7 +23,7 @@ A corridor is a source token on one chain and a destination token on another. A 
 1. It reads `GET /v1/defaults` and builds the corridor list from the chains and tokens that the gateway returns.
 2. It picks the next batch of probe targets.
 3. It opens one quote request per target and polls its status until the quote window closes.
-4. It stores every probe in D1, with every raw HTTP exchange.
+4. It stores every probe in D1, with its raw HTTP exchanges.
 5. It rebuilds the public snapshot and the alert list.
 
 Each probe ends in one outcome: `quoted`, `declined`, `silent`, `incomplete`, or `gateway_error`. The store keeps the quotes, the decline reasons, the timings, and the raw responses. The public snapshot shows the number of distinct operators and the best and worst price. It does not show operator addresses.
@@ -95,11 +95,11 @@ The variables are in the `vars` block of `wrangler.jsonc`. A deploy replaces any
 | Variable                | Default                                          | Meaning                                                                                                                                                                                                                                                |
 | ----------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `NETWORK`               | `testnet`                                        | The network to probe. `mainnet` is refused unless `MAINNET_ACK` is set.                                                                                                                                                                                |
-| `GATEWAY_URL`           | `https://payment-gw.production-testnet.atum.xyz` | The base URL of the Atum payment gateway.                                                                                                                                                                                                              |
+| `GATEWAY_URL`           | `https://payment-gw.production-testnet.atum.xyz` | The origin of the Atum payment gateway. It must be the gateway of `NETWORK`, or a loopback address for local runs.                                                                                                                                     |
 | `PROBE_ENABLED`         | `true`                                           | `false` stops probing.                                                                                                                                                                                                                                 |
 | `TICK_INTERVAL_MINUTES` | `5`                                              | The length of one scheduling slot. Keep it equal to the interval of the cron trigger in `triggers.crons`.                                                                                                                                              |
 | `PROBES_PER_TICK`       | `30`                                             | The number of probe targets in each tick.                                                                                                                                                                                                              |
-| `AMOUNT_TIERS`          | `{"small":"1","typical":"25","large":"100"}`     | The amount for each tier, in whole tokens. The Worker converts it with the decimals from `/v1/defaults`.                                                                                                                                               |
+| `AMOUNT_TIERS`          | `{"small":"1","typical":"25","large":"100"}`     | The amount for each tier, in whole tokens. The Worker converts it with the decimals from `/v1/defaults`. At most 18 fractional and 24 integer digits.                                                                                                  |
 | `POLL_INTERVAL_MS`      | `500`                                            | The wait between two status polls of one quote request.                                                                                                                                                                                                |
 | `QUOTE_WINDOW_SECONDS`  | `3`                                              | How long a probe polls before it records the result.                                                                                                                                                                                                   |
 | `SLOW_QUOTE_MS`         | `2500`                                           | The `slow_quotes` alert fires when the time to the first quote is above this value.                                                                                                                                                                    |
