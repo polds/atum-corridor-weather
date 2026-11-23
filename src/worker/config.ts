@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { cronIntervalMinutes } from "../domain/cron";
-import type { TierAmounts } from "../domain/schedule";
+import { probesPlannedPerTick, SUBREQUEST_RESERVE, type TierAmounts } from "../domain/schedule";
 import type { AlertSeverity } from "../domain/snapshot";
 import { AMOUNT_TIERS, type Network } from "../domain/types";
+import { requestsPerProbe } from "../gateway/probe";
 import type { WebhookFormat } from "../notify/webhook";
 
 /** The value `MAINNET_ACK` must hold before `NETWORK=mainnet` is accepted. */
@@ -53,7 +54,12 @@ export interface Config {
 	readonly repositoryUrl: string;
 	readonly probeEnabled: boolean;
 	readonly tickIntervalMinutes: number;
+	/** `PROBES_PER_TICK` as configured. A tick runs `probesPlannedPerTick`. */
 	readonly probesPerTick: number;
+	/** Subrequests one invocation may make. 50 on Workers Free, 10,000 on Workers Paid. */
+	readonly subrequestLimit: number;
+	/** The probes a tick runs: `probesPerTick`, capped by what `subrequestLimit` covers. At least 1. */
+	readonly probesPlannedPerTick: number;
 	readonly tierAmounts: TierAmounts;
 	readonly pollIntervalMs: number;
 	readonly quoteWindowSeconds: number;
@@ -182,6 +188,7 @@ const envSchema = z
 		REPOSITORY_URL: httpUrl,
 		PROBE_ENABLED: oneOf(["true", "false"]).transform((value) => value === "true"),
 		PROBES_PER_TICK: integer(1, 200),
+		SUBREQUEST_LIMIT: integer(2, 10_000_000).default("50"),
 		AMOUNT_TIERS: tierAmounts,
 		POLL_INTERVAL_MS: integer(100, 10_000),
 		QUOTE_WINDOW_SECONDS: integer(1, 60),
@@ -230,7 +237,24 @@ const envSchema = z
 			});
 			return z.NEVER;
 		}
-		return { ...env, tickIntervalMinutes };
+		const perProbe = requestsPerProbe({
+			quoteWindowSeconds: env.QUOTE_WINDOW_SECONDS,
+			pollIntervalMs: env.POLL_INTERVAL_MS,
+		});
+		const probesPlanned = probesPlannedPerTick({
+			probesPerTick: env.PROBES_PER_TICK,
+			subrequestLimit: env.SUBREQUEST_LIMIT,
+			requestsPerProbe: perProbe,
+		});
+		if (probesPlanned === 0) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["SUBREQUEST_LIMIT"],
+				message: `leaves no probe per tick: one probe with QUOTE_WINDOW_SECONDS=${env.QUOTE_WINDOW_SECONDS} and POLL_INTERVAL_MS=${env.POLL_INTERVAL_MS} can make ${perProbe} requests, one more reads /v1/defaults, and ${SUBREQUEST_RESERVE} stay unused. Raise SUBREQUEST_LIMIT, shorten QUOTE_WINDOW_SECONDS or lengthen POLL_INTERVAL_MS`,
+			});
+			return z.NEVER;
+		}
+		return { ...env, tickIntervalMinutes, probesPlanned };
 	});
 
 /** Parses the Worker's environment variables. Bindings in `env` are ignored. */
@@ -252,6 +276,8 @@ export function parseConfig(env: unknown): ConfigResult {
 			probeEnabled: value.PROBE_ENABLED,
 			tickIntervalMinutes: value.tickIntervalMinutes,
 			probesPerTick: value.PROBES_PER_TICK,
+			subrequestLimit: value.SUBREQUEST_LIMIT,
+			probesPlannedPerTick: value.probesPlanned,
 			tierAmounts: value.AMOUNT_TIERS,
 			pollIntervalMs: value.POLL_INTERVAL_MS,
 			quoteWindowSeconds: value.QUOTE_WINDOW_SECONDS,

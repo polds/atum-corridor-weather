@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { batchFor, isSha256Hex, probeIdFor, probeTargets, slotAt } from "../../src/domain/schedule";
+import {
+	batchFor,
+	isSha256Hex,
+	probeIdFor,
+	probesPlannedPerTick,
+	probeTargets,
+	SUBREQUEST_RESERVE,
+	slotAt,
+} from "../../src/domain/schedule";
 import type { TickSlot } from "../../src/domain/types";
 import { ARB_TO_BASE_USDC, corridorById, testnetCorridors } from "../support/fixtures";
 
@@ -67,6 +75,27 @@ describe("batchFor", () => {
 
 	it("is empty when there is nothing to probe", () => {
 		expect(batchFor(at(7), [], 30)).toStrictEqual([]);
+	});
+});
+
+describe("probesPlannedPerTick", () => {
+	const plan = (probesPerTick: number, subrequestLimit: number) =>
+		probesPlannedPerTick({ probesPerTick, subrequestLimit, requestsPerProbe: 7 });
+
+	it("keeps one request for /v1/defaults and the reserve, and fits whole probes in the rest", () => {
+		expect(plan(30, 50)).toBe(6);
+		expect(plan(30, 10_000)).toBe(30);
+		expect(plan(30, 1 + SUBREQUEST_RESERVE + 7)).toBe(1);
+		expect(plan(30, 1 + SUBREQUEST_RESERVE + 6)).toBe(0);
+		expect(plan(30, 2)).toBe(0);
+		expect(plan(5, 50)).toBe(5);
+	});
+
+	it("never plans a tick that would send the last request the limit allows", () => {
+		for (let limit = 2; limit <= 200; limit += 1) {
+			const sent = 1 + plan(30, limit) * 7;
+			expect(sent === 1 || sent <= limit - SUBREQUEST_RESERVE, `limit ${limit}`).toBe(true);
+		}
 	});
 });
 

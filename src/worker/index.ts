@@ -27,7 +27,9 @@ async function tick(config: Config, env: Env, scheduledTimeMs: number): Promise<
 		},
 		scheduledTimeMs,
 	);
-	console.info({
+	// A platform refusal means the plan does not fit the plan's limits: a fault to fix, not weather.
+	const log = record.aborted?.reason === "subrequest_limit" ? console.error : console.info;
+	log({
 		event: "tick",
 		slot: record.slot.start,
 		corridors: record.corridors.length,
@@ -87,8 +89,10 @@ async function scheduled(controller: ScheduledController, env: Env): Promise<voi
 }
 
 export default {
-	scheduled(controller, env, ctx) {
-		ctx.waitUntil(scheduled(controller, env));
+	// Cloudflare waits up to 15 minutes for the promise a Cron Trigger returns.
+	// waitUntil would add nothing, and ends 30 seconds after an HTTP response.
+	async scheduled(controller, env) {
+		await scheduled(controller, env);
 	},
 	fetch(request, env) {
 		return handleRequest(request, {

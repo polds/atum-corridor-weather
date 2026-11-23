@@ -76,6 +76,7 @@ export interface SnapshotInput {
 	readonly network: Network;
 	readonly nowMs: number;
 	readonly tickIntervalMinutes: number;
+	/** The probes a tick runs: `PROBES_PER_TICK` after the subrequest cap. */
 	readonly probesPerTick: number;
 	readonly slowQuoteMs: number;
 	readonly tierAmounts: TierAmounts;

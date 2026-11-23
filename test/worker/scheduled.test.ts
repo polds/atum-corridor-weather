@@ -13,6 +13,9 @@ import { ONE_TARGET } from "../support/tick";
 
 const lastPoll = fixtures.quoted.events.at(-1)?.json;
 
+/** The handler as Cloudflare calls it, with an execution context as the third argument. */
+const handler: ExportedHandler<Env> = worker;
+
 beforeEach(clearTables);
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -20,22 +23,30 @@ afterEach(() => {
 
 const HOOK = "http://127.0.0.1:9999/hook";
 
-async function runScheduled(
-	overrides: Readonly<Record<string, unknown>>,
-	cron = env.PROBE_CRON,
-): Promise<Request[]> {
+/** Answers gateway and webhook requests on `fetch`. Returns what was sent. */
+function fakeFetch(refuseAfter = Number.POSITIVE_INFINITY): Request[] {
 	const sent: Request[] = [];
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 		const request = new Request(input, init);
 		sent.push(request);
+		if (sent.length > refuseAfter) throw new Error("Too many subrequests.");
 		const { pathname } = new URL(request.url);
 		if (pathname === "/hook") return new Response("ok");
 		if (pathname === "/v1/defaults") return jsonResponse(200, fixtures.testnetDefaults);
 		if (request.method === "POST") return jsonResponse(202, fixtures.quoted.events[0]?.json);
 		return jsonResponse(200, lastPoll);
 	});
+	return sent;
+}
+
+async function runScheduled(
+	overrides: Readonly<Record<string, unknown>>,
+	cron = env.PROBE_CRON,
+	refuseAfter = Number.POSITIVE_INFINITY,
+): Promise<Request[]> {
+	const sent = fakeFetch(refuseAfter);
 	const ctx = createExecutionContext();
-	worker.scheduled(
+	await handler.scheduled?.(
 		createScheduledController({ scheduledTime: Date.now(), cron }),
 		{ ...env, GATEWAY_URL: "http://127.0.0.1:8789", ...overrides },
 		ctx,
@@ -61,6 +72,38 @@ describe("scheduled handler", () => {
 		);
 		const snapshot = await env.DB.prepare("SELECT count(*) AS n FROM snapshots").first("n");
 		expect(snapshot).toBe(1);
+	});
+
+	it("resolves only after the tick's store writes are done, without waitUntil", async () => {
+		vi.spyOn(console, "info").mockImplementation(() => {});
+		fakeFetch();
+		const ctx = createExecutionContext();
+		const waitUntil = vi.spyOn(ctx, "waitUntil");
+		await handler.scheduled?.(
+			createScheduledController({ scheduledTime: Date.now(), cron: env.PROBE_CRON }),
+			{ ...env, GATEWAY_URL: "http://127.0.0.1:8789", ...ONE_TARGET },
+			ctx,
+		);
+		expect(waitUntil).not.toHaveBeenCalled();
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM ticks").first("n")).toBe(1);
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM probes").first("n")).toBe(1);
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM snapshots").first("n")).toBe(1);
+	});
+
+	it("logs a tick the platform stopped at the subrequest limit as an error", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const sent = await runScheduled(ONE_TARGET, env.PROBE_CRON, 1);
+		expect(sent).toHaveLength(2);
+		expect(error).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "tick",
+				completed: 0,
+				aborted: expect.objectContaining({ reason: "subrequest_limit" }),
+			}),
+		);
+		expect(info).not.toHaveBeenCalledWith(expect.objectContaining({ event: "tick" }));
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM probes").first("n")).toBe(0);
 	});
 
 	it("sends nothing when the configuration is invalid", async () => {

@@ -1,8 +1,10 @@
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SUBREQUEST_RESERVE } from "../../src/domain/schedule";
 import type { RawExchange } from "../../src/domain/types";
 import { createGatewayClient } from "../../src/gateway/client";
 import { createStore } from "../../src/store/store";
+import type { Config } from "../../src/worker/config";
 import { runTick, type TickDeps } from "../../src/worker/tick";
 import { clearTables } from "../support/db";
 import { FakeClock, type Handler, jsonResponse, scriptedFetch } from "../support/fake-gateway";
@@ -284,6 +286,8 @@ describe("oversized gateway responses", () => {
 			CORRIDOR_FILTER: "^eip155:\\d+/USDC>eip155:\\d+/USDC$",
 			AMOUNT_TIERS: '{"small":"1","typical":"25","large":"100"}',
 			PROBES_PER_TICK: "15",
+			// 15 probes of 7 requests need more than the Workers Free 50.
+			SUBREQUEST_LIMIT: "10000",
 		});
 		const hostile = tickHarness({
 			startMs: SCHEDULED + 1000,
@@ -348,12 +352,12 @@ describe("oversized gateway responses", () => {
 		const { deps, store } = tickHarness({
 			startMs: SCHEDULED + 1000,
 			config: testConfig(ONE_TARGET),
-			scenario: () => padded(240_000, 10),
+			scenario: () => padded(240_000, 6),
 		});
 		const tick = await runTick(deps, SCHEDULED);
 		const [probe] = tick.probes;
 		expect(probe?.outcome.kind).toBe("quoted");
-		expect(probe?.raw).toHaveLength(11);
+		expect(probe?.raw).toHaveLength(7);
 		expect(await storedProbe()).toMatchObject({ outcome: "quoted" });
 		const raw = await env.DB.prepare("SELECT raw_json FROM probe_raw").first("raw_json");
 		expect(String(raw).length).toBeLessThanOrEqual(1024 * 1024);
@@ -621,5 +625,245 @@ describe("tier amounts a token cannot represent", () => {
 		});
 		const tick = await runTick(deps, SCHEDULED);
 		expect(tick).toMatchObject({ planned: 1, unrepresentable: 1 });
+	});
+});
+
+/** The quoted fixture with every answer `collecting`, so a probe polls until its schedule ends. */
+const collectingForever: ProbeFixture = {
+	...fixtures.quoted,
+	events: fixtures.quoted.events.map((event) => ({
+		...event,
+		json: { ...(event.json as object), status: "collecting" },
+	})),
+};
+
+describe("the subrequest budget", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("plans 6 probes on the free-plan default and keeps the reserve out of 50 requests", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		// The committed wrangler.jsonc: SUBREQUEST_LIMIT 50, a 3 s window polled every 500 ms, 30 probes.
+		const config = testConfig();
+		expect(config).toMatchObject({
+			subrequestLimit: 50,
+			quoteWindowSeconds: 3,
+			pollIntervalMs: 500,
+			probesPerTick: 30,
+		});
+		const { deps, requests, store } = tickHarness({
+			startMs: SCHEDULED + 1000,
+			config,
+			scenario: () => collectingForever,
+		});
+		const tick = await runTick(deps, SCHEDULED);
+
+		expect(tick.planned).toBe(6);
+		expect(tick.probes.map((probe) => probe.outcome.kind)).toStrictEqual(
+			Array(6).fill("incomplete"),
+		);
+		// Every probe polls to the end here, so this is the most a tick can send.
+		expect(requests.length).toBe(1 + 6 * 7);
+		expect(requests.length).toBeLessThanOrEqual(50 - SUBREQUEST_RESERVE);
+		const capped = warn.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { event?: unknown }).event === "probes_capped",
+		);
+		expect(capped).toStrictEqual([
+			[
+				{
+					event: "probes_capped",
+					configured: 30,
+					planned: 6,
+					subrequestLimit: 50,
+					requestsPerProbe: 7,
+				},
+			],
+		]);
+		expect((await store.readSnapshot("testnet"))?.cadence).toStrictEqual({
+			probesPerTick: 6,
+			sweepHours: 23,
+		});
+	});
+
+	it("plans the configured 30 probes on a paid limit and logs no cap", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const config = testConfig({ SUBREQUEST_LIMIT: "10000" });
+		expect(config.probesPlannedPerTick).toBe(30);
+		const { deps, store } = tickHarness({
+			startMs: SCHEDULED + 1000,
+			config,
+			scenario: quotedEverywhere,
+		});
+		const tick = await runTick(deps, SCHEDULED);
+		expect(tick.planned).toBe(30);
+		expect(tick.probes).toHaveLength(30);
+		expect(warn).not.toHaveBeenCalledWith(expect.objectContaining({ event: "probes_capped" }));
+		expect((await store.readSnapshot("testnet"))?.cadence).toMatchObject({ probesPerTick: 30 });
+	});
+
+	it("covers every target exactly once per sweep at the planned size", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const config = testConfig({
+			CORRIDOR_FILTER: "^eip155:421614/USDC>",
+			AMOUNT_TIERS: '{"small":"1","typical":"25"}',
+			PROBES_PER_TICK: "30",
+			SUBREQUEST_LIMIT: "50",
+		});
+		const probed: string[] = [];
+		let targets = 0;
+		for (let index = 0; probed.length === 0 || probed.length < targets; index += 1) {
+			const slotMs = SCHEDULED + index * 300_000;
+			const run = tickHarness({ startMs: slotMs + 1000, config, scenario: quotedEverywhere });
+			const tick = await runTick(run.deps, slotMs);
+			targets = tick.corridors.length * 2;
+			expect(tick.planned).toBe(6);
+			probed.push(
+				...tick.probes.map((probe) => `${probe.target.corridor.id} ${probe.target.tier}`),
+			);
+		}
+		expect(targets).toBe(46);
+		const sweep = probed.slice(0, targets);
+		expect(new Set(sweep).size).toBe(targets);
+	});
+
+	it("stops as subrequest_limit and stores no row for the probe that hit it", async () => {
+		let sent = 0;
+		const { deps, store } = tickHarness({
+			startMs: SCHEDULED + 1000,
+			config: testConfig({
+				PROBES_PER_TICK: "4",
+				AMOUNT_TIERS: '{"small":"1"}',
+				SUBREQUEST_LIMIT: "10000",
+			}),
+			scenario: quotedEverywhere,
+			// Like the platform: past a number of subrequests, every later fetch throws.
+			wrap: (handler) => (request) => {
+				sent += 1;
+				if (sent > 1 + 2 * 7 + 3) throw new Error("Too many subrequests.");
+				return handler(request);
+			},
+		});
+		const tick = await runTick(deps, SCHEDULED);
+		expect(tick.aborted).toMatchObject({
+			reason: "subrequest_limit",
+			message: expect.stringContaining("Too many subrequests."),
+		});
+		expect(tick.planned).toBe(4);
+		expect(tick.probes.map((probe) => probe.outcome.kind)).toStrictEqual(["quoted", "quoted"]);
+		expect(await count("probes")).toBe(2);
+		expect(await count("probe_raw")).toBe(2);
+		const snapshot = await store.readSnapshot("testnet");
+		expect(snapshot?.lastTick).toMatchObject({
+			completed: 2,
+			gatewayErrors: 0,
+			aborted: "subrequest_limit",
+		});
+		expect(snapshot?.alerts.map((alert) => alert.kind)).not.toContain("gateway_errors");
+	});
+});
+
+/** A store over `env.DB` that adds up `meta.rows_written` of every batch it sends. */
+function countingDeps(deps: TickDeps): { readonly deps: TickDeps; readonly written: () => number } {
+	let written = 0;
+	const db = new Proxy(env.DB, {
+		get(target, property) {
+			if (property === "batch") {
+				return async (statements: D1PreparedStatement[]) => {
+					const results = await target.batch(statements);
+					for (const result of results) written += result.meta.rows_written;
+					return results;
+				};
+			}
+			const value: unknown = Reflect.get(target, property);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	return {
+		deps: { ...deps, store: createStore(db) },
+		written: () => {
+			const total = written;
+			written = 0;
+			return total;
+		},
+	};
+}
+
+describe("the corridor list", () => {
+	const config = testConfig({ PROBES_PER_TICK: "1", AMOUNT_TIERS: '{"small":"1"}' });
+	/** The testnet listing without Base Sepolia: a smaller list, B. */
+	const withoutBase = () => {
+		const { "eip155:84532": _, ...rest } = fixtures.testnetDefaults;
+		return jsonResponse(200, rest);
+	};
+	const down = () => jsonResponse(503, { code: "SERVICE_UNAVAILABLE", message: "down" });
+
+	async function tickAt(
+		index: number,
+		options: { readonly defaults?: () => Response; readonly config?: Config } = {},
+	): Promise<{ readonly written: number; readonly current: number }> {
+		const slotMs = SCHEDULED + index * 300_000;
+		const run = tickHarness({
+			startMs: slotMs + 1000,
+			config: options.config ?? config,
+			scenario: quotedEverywhere,
+			...(options.defaults === undefined ? {} : { defaults: options.defaults }),
+		});
+		const counting = countingDeps(run.deps);
+		await runTick(counting.deps, slotMs);
+		const snapshot = await run.store.readSnapshot("testnet");
+		return { written: counting.written(), current: snapshot?.corridors.length ?? -1 };
+	}
+
+	async function lastSeen(): Promise<unknown[]> {
+		const { results } = await env.DB.prepare(
+			"SELECT last_seen, count(*) AS n FROM corridors GROUP BY last_seen ORDER BY last_seen",
+		).all();
+		return results;
+	}
+
+	it("is not rewritten while it is unchanged", async () => {
+		const first = await tickAt(0);
+		const second = await tickAt(1);
+		expect(first.current).toBe(552);
+		expect(second.current).toBe(552);
+		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:35:00.000Z", n: 552 }]);
+		expect(second.written).toBeLessThan(first.written / 10);
+		for (let index = 2; index < 6; index += 1) {
+			expect(await tickAt(index)).toMatchObject({ current: 552, written: second.written });
+		}
+		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:35:00.000Z", n: 552 }]);
+	});
+
+	it("follows the list from A to B and back to A", async () => {
+		expect((await tickAt(0)).current).toBe(552);
+		const b = await tickAt(1, { defaults: withoutBase });
+		expect(b.current).toBeLessThan(552);
+		expect(b.current).toBeGreaterThan(0);
+		expect((await tickAt(2, { defaults: withoutBase })).current).toBe(b.current);
+		const backToA = await tickAt(3);
+		expect(backToA.current).toBe(552);
+		expect(backToA.written).toBeGreaterThan(552);
+		expect((await tickAt(4)).current).toBe(552);
+	});
+
+	it("keeps the list through a failed discovery between two equal lists", async () => {
+		const first = await tickAt(0);
+		expect((await tickAt(1, { defaults: down })).current).toBe(552);
+		const after = await tickAt(2);
+		expect(after.current).toBe(552);
+		expect(after.written).toBeLessThan(first.written / 10);
+		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:35:00.000Z", n: 552 }]);
+	});
+
+	it("converges on a database that holds corridor rows but no stored hash", async () => {
+		await tickAt(0);
+		await env.DB.prepare("DELETE FROM corridor_sets").run();
+		const converging = await tickAt(1);
+		expect(converging.written).toBeGreaterThan(552);
+		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:40:00.000Z", n: 552 }]);
+		const settled = await tickAt(2);
+		expect(settled.written).toBeLessThan(converging.written / 10);
+		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:40:00.000Z", n: 552 }]);
 	});
 });

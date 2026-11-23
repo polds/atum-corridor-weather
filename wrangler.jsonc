@@ -31,6 +31,10 @@
 		"GATEWAY_URL": "https://payment-gw.production-testnet.atum.xyz",
 		"PROBE_ENABLED": "true",
 		"PROBES_PER_TICK": "30",
+		// Subrequests one invocation may make. 50 is the Workers Free limit; the Workers Paid
+		// limit is 10,000. A tick plans no more probes than this covers (docs/DESIGN.md,
+		// "Platform limits"), so with 50 it runs 6 of the 30 above.
+		"SUBREQUEST_LIMIT": "50",
 		"AMOUNT_TIERS": "{\"small\":\"1\",\"typical\":\"25\",\"large\":\"100\"}",
 		"POLL_INTERVAL_MS": "500",
 		"QUOTE_WINDOW_SECONDS": "3",

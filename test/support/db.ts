@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 const TABLES = [
 	"ticks",
 	"corridors",
+	"corridor_sets",
 	"probes",
 	"probe_declines",
 	"probe_raw",

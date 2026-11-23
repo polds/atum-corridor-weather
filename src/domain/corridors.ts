@@ -76,6 +76,25 @@ export function corridorLabel(source: Asset, destination: Asset): string {
 	return `${source.chainId}/${source.symbol}>${destination.chainId}/${destination.symbol}`;
 }
 
+/**
+ * The text the corridor list's hash covers: each corridor id with the symbol and
+ * decimals of both assets, sorted by id. That is every column of a corridors row
+ * except its times, so two lists with the same text store the same rows.
+ */
+export function corridorListText(corridors: readonly Corridor[]): string {
+	return JSON.stringify(
+		[...corridors]
+			.sort((a, b) => compareText(a.id, b.id))
+			.map(({ id, source, destination }) => [
+				id,
+				source.symbol,
+				source.decimals,
+				destination.symbol,
+				destination.decimals,
+			]),
+	);
+}
+
 /** Every ordered pair of distinct assets, sorted by corridor id. */
 export function discoverCorridors(listing: DefaultsListing, filter: RegExp | null): Discovery {
 	const assets = listAssets(listing);

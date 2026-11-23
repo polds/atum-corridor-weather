@@ -38,8 +38,9 @@ export interface SnapshotSource {
 export interface Store {
 	/**
 	 * Stores the tick, its corridors and its probes in one batch. A tick or probe
-	 * already stored under the same key is kept as first written; corridors are
-	 * upserted.
+	 * already stored under the same key is kept as first written. The corridors
+	 * are upserted, with their hash, only when `corridorsHash` differs from the
+	 * stored one, so an unchanged list costs no write.
 	 */
 	saveTick(
 		tick: TickRecord,
@@ -371,16 +372,37 @@ export function createStore(db: D1Database): Store {
 		async saveTick(tick, { dropRawBefore }) {
 			const { network, start } = tick.slot;
 			const probes = tick.probes;
+			const hash = tick.corridorsHash;
+			// Two ticks that race here both write the same rows, which upsert to the same state.
+			const storedHash =
+				hash === null
+					? null
+					: await db
+							.prepare("SELECT hash FROM corridor_sets WHERE network = ?1")
+							.bind(network)
+							.first("hash");
+			const corridorWrites =
+				hash === null || storedHash === hash
+					? []
+					: [
+							...bulkInsert(db, {
+								table: "corridors",
+								columns: CORRIDOR_COLUMNS,
+								conflict: ["network", "id"],
+								update: `${assignments(CORRIDOR_COLUMNS, ["network", "id", "first_seen", "last_seen"])},
+									first_seen = MIN(first_seen, excluded.first_seen),
+									last_seen = MAX(last_seen, excluded.last_seen)`,
+								rows: tick.corridors.map((corridor) => corridorRow(network, start, corridor)),
+							}),
+							db
+								.prepare(
+									`INSERT INTO corridor_sets (network, hash, first_seen) VALUES (?1, ?2, ?3)
+									ON CONFLICT (network) DO UPDATE SET hash = excluded.hash, first_seen = excluded.first_seen`,
+								)
+								.bind(network, hash, start),
+						];
 			const statements = [
-				...bulkInsert(db, {
-					table: "corridors",
-					columns: CORRIDOR_COLUMNS,
-					conflict: ["network", "id"],
-					update: `${assignments(CORRIDOR_COLUMNS, ["network", "id", "first_seen", "last_seen"])},
-						first_seen = MIN(first_seen, excluded.first_seen),
-						last_seen = MAX(last_seen, excluded.last_seen)`,
-					rows: tick.corridors.map((corridor) => corridorRow(network, start, corridor)),
-				}),
+				...corridorWrites,
 				db
 					.prepare(
 						`INSERT INTO ticks (network, slot_start, slot_index, started_at, finished_at,

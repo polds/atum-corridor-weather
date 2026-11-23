@@ -37,6 +37,7 @@ describe("parseConfig", () => {
 			ALERT_WEBHOOK_FORMAT: "slack",
 			ALERT_MIN_SEVERITY: "critical",
 			PUBLIC_URL: "",
+			SUBREQUEST_LIMIT: "100",
 		});
 		if (!result.ok) throw new Error(result.errors.join("; "));
 		expect(result.config).toStrictEqual({
@@ -46,6 +47,8 @@ describe("parseConfig", () => {
 			probeEnabled: true,
 			tickIntervalMinutes: 15,
 			probesPerTick: 12,
+			subrequestLimit: 100,
+			probesPlannedPerTick: 12,
 			tierAmounts: { small: "1", typical: "25", large: "100" },
 			pollIntervalMs: 500,
 			quoteWindowSeconds: 3,
@@ -185,6 +188,37 @@ describe("parseConfig", () => {
 			config: { rawRetentionDays: 0 },
 		});
 	});
+	it("plans the probes a tick can make within SUBREQUEST_LIMIT", () => {
+		// 3 s window, 500 ms interval: 7 requests per probe, plus one for /v1/defaults and the reserve.
+		const timing = { QUOTE_WINDOW_SECONDS: "3", POLL_INTERVAL_MS: "500", PROBES_PER_TICK: "30" };
+		expect(parse({ ...timing, SUBREQUEST_LIMIT: undefined })).toMatchObject({
+			ok: true,
+			config: { probesPerTick: 30, subrequestLimit: 50, probesPlannedPerTick: 6 },
+		});
+		expect(parse({ ...timing, SUBREQUEST_LIMIT: "10000" })).toMatchObject({
+			ok: true,
+			config: { probesPerTick: 30, subrequestLimit: 10_000, probesPlannedPerTick: 30 },
+		});
+		expect(parse({ ...timing, SUBREQUEST_LIMIT: "10000000" }).ok).toBe(true);
+		expect(
+			parse({ QUOTE_WINDOW_SECONDS: "1", POLL_INTERVAL_MS: "1000", SUBREQUEST_LIMIT: "9" }),
+		).toMatchObject({ ok: true, config: { probesPlannedPerTick: 1 } });
+		for (const bad of ["1", "10000001", "fifty", ""]) {
+			expect(parse({ SUBREQUEST_LIMIT: bad }), bad).toMatchObject({
+				ok: false,
+				errors: [expect.stringMatching(/^SUBREQUEST_LIMIT: /)],
+			});
+		}
+	});
+
+	it("refuses a quote window and poll interval that leave no probe in the budget", () => {
+		const result = parse({ QUOTE_WINDOW_SECONDS: "60", POLL_INTERVAL_MS: "100" });
+		expect(result).toMatchObject({ ok: false, errors: [expect.any(String)] });
+		expect(result.ok || result.errors[0]).toMatch(
+			/^SUBREQUEST_LIMIT: .*QUOTE_WINDOW_SECONDS.*POLL_INTERVAL_MS/,
+		);
+	});
+
 	it("requires both crons as five fields joined by single spaces", () => {
 		for (const name of ["PROBE_CRON", "CANARY_CRON"]) {
 			const deployed = String(env[name as keyof typeof env]);
