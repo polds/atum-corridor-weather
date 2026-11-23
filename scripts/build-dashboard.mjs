@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 /**
- * Builds the static dashboard into dist/dashboard: index.html, one JS file,
- * one CSS file and the favicon. Output names carry a content hash, so the
+ * Builds the static dashboard into dist/dashboard: index.html, the app script,
+ * the small theme script that runs before the first paint, one CSS file and the
+ * favicon. Output names carry a content hash, so the
  * same sources always give the same bytes.
  *
  *   pnpm run build:dashboard
@@ -60,17 +61,37 @@ async function buildDashboard() {
 		metafile: true,
 		logLevel: "warning",
 	});
-	const outputs = Object.keys(result.metafile.outputs).map((file) => path.basename(file));
-	const js = outputs.find((f) => f.endsWith(".js"));
+	// The theme script runs in <head> as a classic script, before the first paint.
+	const boot = await build({
+		absWorkingDir: ROOT,
+		entryPoints: { theme: "dashboard/src/theme-boot.ts" },
+		bundle: true,
+		minify: true,
+		format: "iife",
+		platform: "browser",
+		target: ["es2022"],
+		outdir: OUT,
+		entryNames: "[name]-[hash]",
+		legalComments: "none",
+		charset: "utf8",
+		metafile: true,
+		logLevel: "warning",
+	});
+	const outputs = [result, boot].flatMap((built) =>
+		Object.keys(built.metafile.outputs).map((file) => path.basename(file)),
+	);
+	const js = outputs.find((f) => f.startsWith("app-") && f.endsWith(".js"));
+	const themeJs = outputs.find((f) => f.startsWith("theme-") && f.endsWith(".js"));
 	const css = outputs.find((f) => f.endsWith(".css"));
-	if (js === undefined || css === undefined)
-		throw new Error(`expected one JS and one CSS output, got ${outputs.join(", ")}`);
+	if (js === undefined || themeJs === undefined || css === undefined || outputs.length !== 3)
+		throw new Error(`expected app JS, theme JS and one CSS output, got ${outputs.join(", ")}`);
 
 	const url = escapeAttr(repositoryUrl());
 	const template = await readFile(path.join(SRC, "index.html"), "utf8");
 	const html = template
 		.replaceAll("%REPOSITORY_URL%", url)
 		.replaceAll("%JS%", js)
+		.replaceAll("%THEME_JS%", themeJs)
 		.replaceAll("%CSS%", css);
 	if (/%[A-Z_]+%/.test(html)) throw new Error("index.html still has an unreplaced placeholder");
 	await writeFile(path.join(OUT, "index.html"), html);

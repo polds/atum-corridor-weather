@@ -1,73 +1,49 @@
-/* Corridor Weather. Tokens first; light is the default, dark is selected, not inverted. */
+/*
+ * Corridor Weather. Tokens first. Each token names its light and its dark value,
+ * and `color-scheme` picks between them: the system's setting by default, or the
+ * theme the reader chose with the header button, which sets `data-theme`.
+ */
 
 :root {
-	color-scheme: light;
-	--page: #f4f4f1;
-	--surface: #fcfcfb;
-	--surface-2: #efeee9;
-	--text: #0b0b0b;
-	--text-2: #52514e;
-	--muted: #67665f;
-	--border: rgb(11 11 11 / 12%);
-	--border-strong: rgb(11 11 11 / 22%);
-	--grid: #e1e0d9;
-	--axis: #c3c2b7;
-	--link: #1c5cab;
-	--focus: #2a78d6;
-	--wash: rgb(11 11 11 / 5%);
-	--shadow: 0 6px 24px rgb(11 11 11 / 14%);
+	color-scheme: light dark;
+	--page: light-dark(#f4f4f1, #0d0d0d);
+	--surface: light-dark(#fcfcfb, #1a1a19);
+	--surface-2: light-dark(#efeee9, #242422);
+	--text: light-dark(#0b0b0b, #f0efec);
+	--text-2: light-dark(#52514e, #c3c2b7);
+	--muted: light-dark(#67665f, #a3a29b);
+	--border: light-dark(rgb(11 11 11 / 12%), rgb(255 255 255 / 12%));
+	--border-strong: light-dark(rgb(11 11 11 / 22%), rgb(255 255 255 / 24%));
+	--grid: light-dark(#e1e0d9, #2c2c2a);
+	--axis: light-dark(#c3c2b7, #45453f);
+	--link: light-dark(#1c5cab, #86b6ef);
+	--focus: light-dark(#2a78d6, #5598e7);
+	--wash: light-dark(rgb(11 11 11 / 5%), rgb(255 255 255 / 6%));
+	--shadow: 0 6px 24px light-dark(rgb(11 11 11 / 14%), rgb(0 0 0 / 55%));
 
-	--fair-bg: #dcf0dc;
-	--fair-ink: #0b6b0b;
-	--cloudy-bg: #fbeecb;
-	--cloudy-ink: #7f5500;
-	--stormy-bg: #f8dfdf;
-	--stormy-ink: #a82727;
-	--unknown-bg: #ebeae5;
-	--unknown-ink: #67665f;
+	--fair-bg: light-dark(#dcf0dc, #163218);
+	--fair-ink: light-dark(#0b6b0b, #55c955);
+	--cloudy-bg: light-dark(#fbeecb, #372b0d);
+	--cloudy-ink: light-dark(#7f5500, #f5b02a);
+	--stormy-bg: light-dark(#f8dfdf, #3d1b1b);
+	--stormy-ink: light-dark(#a82727, #f27a7a);
+	--unknown-bg: light-dark(#ebeae5, #242422);
+	--unknown-ink: light-dark(#67665f, #a3a29b);
 
-	--tier-small: #86b6ef;
-	--tier-typical: #2a78d6;
-	--tier-large: #104281;
-	--retry: #2a78d6;
-	--noretry: #eb6834;
-	--size: #2a78d6;
+	--tier-small: light-dark(#86b6ef, #9ec5f4);
+	--tier-typical: light-dark(#2a78d6, #3987e5);
+	--tier-large: light-dark(#104281, #1c5cab);
+	--retry: light-dark(#2a78d6, #3987e5);
+	--noretry: light-dark(#eb6834, #d95926);
+	--size: light-dark(#2a78d6, #3987e5);
 }
 
-@media (prefers-color-scheme: dark) {
-	:root {
-		color-scheme: dark;
-		--page: #0d0d0d;
-		--surface: #1a1a19;
-		--surface-2: #242422;
-		--text: #f0efec;
-		--text-2: #c3c2b7;
-		--muted: #a3a29b;
-		--border: rgb(255 255 255 / 12%);
-		--border-strong: rgb(255 255 255 / 24%);
-		--grid: #2c2c2a;
-		--axis: #45453f;
-		--link: #86b6ef;
-		--focus: #5598e7;
-		--wash: rgb(255 255 255 / 6%);
-		--shadow: 0 6px 24px rgb(0 0 0 / 55%);
+:root[data-theme="light"] {
+	color-scheme: light;
+}
 
-		--fair-bg: #163218;
-		--fair-ink: #55c955;
-		--cloudy-bg: #372b0d;
-		--cloudy-ink: #f5b02a;
-		--stormy-bg: #3d1b1b;
-		--stormy-ink: #f27a7a;
-		--unknown-bg: #242422;
-		--unknown-ink: #a3a29b;
-
-		--tier-small: #9ec5f4;
-		--tier-typical: #3987e5;
-		--tier-large: #1c5cab;
-		--retry: #3987e5;
-		--noretry: #d95926;
-		--size: #3987e5;
-	}
+:root[data-theme="dark"] {
+	color-scheme: dark;
 }
 
 *,
@@ -245,6 +221,32 @@ header.site {
 	font-size: 0.9rem;
 }
 
+.icon-button {
+	display: inline-grid;
+	place-items: center;
+	flex: none;
+	width: 32px;
+	height: 32px;
+	padding: 0;
+	color: var(--text-2);
+	background: transparent;
+	border: 1px solid var(--border-strong);
+	border-radius: 8px;
+	cursor: pointer;
+}
+
+.icon-button:hover {
+	color: var(--text);
+	background: var(--wash);
+}
+
+/* The theme button needs the script, so it is not offered without it. */
+@media (scripting: none) {
+	.icon-button {
+		display: none;
+	}
+}
+
 .notice {
 	margin: 16px 0 0;
 	padding: 10px 14px;
@@ -354,6 +356,74 @@ main:focus {
 	display: grid;
 	gap: 12px;
 	justify-items: start;
+}
+
+/* Loading ---------------------------------------------------------------- */
+
+/*
+ * The placeholder index.html ships inside <main>, shaped like the report. It is
+ * in the first paint, so the footer starts below it and nothing jumps when the
+ * script and the snapshot arrive.
+ */
+.skeleton {
+	display: grid;
+	gap: 20px;
+}
+
+.sk {
+	background: var(--wash);
+	border-radius: 8px;
+}
+
+.sk-title {
+	height: 30px;
+	width: min(60%, 340px);
+}
+
+.sk-line {
+	height: 14px;
+	width: min(85%, 520px);
+}
+
+.sk-tile {
+	height: 96px;
+	border-radius: 10px;
+}
+
+.sk-card {
+	min-height: 220px;
+	border-radius: 10px;
+}
+
+.sk-toolbar {
+	height: 44px;
+	width: min(100%, 640px);
+	margin-top: 12px;
+}
+
+/* About as tall as the corridor matrix, so the footer starts near where it ends up. */
+.sk-board {
+	min-height: max(60vh, 760px);
+	border-radius: 10px;
+}
+
+/* Without scripting nothing replaces the placeholder, and <noscript> says why. */
+@media (scripting: none) {
+	.skeleton {
+		display: none;
+	}
+}
+
+@keyframes sk-in {
+	from {
+		opacity: 0;
+	}
+}
+
+@keyframes sk-pulse {
+	50% {
+		opacity: 0.45;
+	}
 }
 
 /* Report ----------------------------------------------------------------- */
@@ -1693,5 +1763,14 @@ details.card > summary {
 		transition:
 			box-shadow 80ms ease,
 			border-color 80ms ease;
+	}
+
+	/* The placeholder waits 150 ms before it shows, so a fast load never flashes it. */
+	.skeleton {
+		animation: sk-in 200ms ease-out 150ms backwards;
+	}
+
+	.sk {
+		animation: sk-pulse 1.8s ease-in-out infinite;
 	}
 }

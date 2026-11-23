@@ -55,6 +55,15 @@ import {
 	RETRY_AFTER_DELAY,
 	spreadSeries,
 } from "./series";
+import {
+	effectiveTheme,
+	readStoredTheme,
+	storeTheme,
+	THEME_STORAGE_KEY,
+	type Theme,
+	toggledChoice,
+} from "./theme";
+import { applyTheme, themeStorage } from "./theme-dom";
 
 const SNAPSHOT_URL = "/api/v1/snapshot.json";
 const HISTORY_DAYS = 7;
@@ -92,6 +101,8 @@ const state: State = {
 };
 
 const main = byId("main");
+/** The loading placeholder that index.html ships, so the first paint and every later load show the same thing. */
+const skeleton = byId("boot");
 const banners = byId("banners");
 const networkPill = byId("network");
 let cleanups: (() => void)[] = [];
@@ -168,7 +179,7 @@ function render(opts: { preserveToolbar: boolean } = { preserveToolbar: false })
 	if (load.kind !== "ready") {
 		cleanup();
 		networkPill.hidden = true;
-		main.replaceChildren(renderLoadState(load));
+		showLoadState(load.kind === "loading" ? skeleton : renderLoadState(load));
 		document.title = "Corridor Weather";
 		return;
 	}
@@ -191,14 +202,19 @@ function cleanup(): void {
 	cleanups = [];
 }
 
-function renderLoadState(load: Exclude<Load, { kind: "ready" }>): HTMLElement {
+/** Puts `el` alone in main. An element already there stays in place, so its animation does not restart. */
+function showLoadState(el: HTMLElement): void {
+	if (el.parentNode !== main) {
+		main.replaceChildren(el);
+		return;
+	}
+	for (const child of [...main.children]) {
+		if (child !== el) child.remove();
+	}
+}
+
+function renderLoadState(load: Exclude<Load, { kind: "ready" | "loading" }>): HTMLElement {
 	switch (load.kind) {
-		case "loading":
-			return h(
-				"div",
-				{ class: "state", role: "status" },
-				h("p", undefined, "Loading current conditions…"),
-			);
 		case "missing":
 			return h(
 				"div",
@@ -1735,6 +1751,37 @@ function scheduleRefresh(): void {
 		else scheduleRefresh();
 	}, Math.max(1, minutes) * 60_000);
 }
+
+const themeButton = byId("theme");
+const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+let themeChoice = readStoredTheme(themeStorage());
+
+function systemTheme(): Theme {
+	return systemDark.matches ? "dark" : "light";
+}
+
+/** Applies the choice and names, on the button, the theme a press would switch to. */
+function showTheme(): void {
+	applyTheme(document.documentElement, themeChoice);
+	const other = effectiveTheme(themeChoice, systemTheme()) === "dark" ? "light" : "dark";
+	const label = `Switch to the ${other} theme`;
+	themeButton.setAttribute("aria-label", label);
+	themeButton.title = label;
+}
+
+themeButton.addEventListener("click", () => {
+	themeChoice = toggledChoice(themeChoice, systemTheme());
+	storeTheme(themeStorage(), themeChoice);
+	showTheme();
+});
+systemDark.addEventListener("change", showTheme);
+// Another tab changed the choice.
+window.addEventListener("storage", (event) => {
+	if (event.key !== null && event.key !== THEME_STORAGE_KEY) return;
+	themeChoice = readStoredTheme(themeStorage());
+	showTheme();
+});
+showTheme();
 
 window.addEventListener("hashchange", onRouteChange);
 window.addEventListener("scroll", hideTip, { passive: true });
