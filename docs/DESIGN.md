@@ -141,6 +141,35 @@ The committed configuration runs 6 probes every 2 minutes and publishes every 10
 
 Rows written set the ceiling of the free plan, at roughly 9,000 probes a day. Rows read do not grow with the probe rate. On the paid plan, set `SUBREQUEST_LIMIT` to `10000` and choose any `PROBES_PER_TICK`.
 
+### Retention and long history
+
+D1 on the free plan caps a database at 500 MB, and nothing may depend on a person noticing that it is full. So the store grows to a planned size and holds it, and old detail is reduced to daily figures before it is deleted.
+
+Measured in the test pool, one stored probe takes about 19.9 KB when it was quoted and 7.5 KB when it was declined. The raw exchanges are 18.2 KB and 5.6 KB of that. At 4,320 probes a day that is 30 to 85 MB a day, so 14 days of everything does not fit.
+
+| Data                              | Kept for                         | Size at the committed rate, estimated |
+| --------------------------------- | -------------------------------- | ------------------------------------- |
+| Raw exchanges, `probe_raw`        | `RAW_RETENTION_DAYS`, 3 days     | about 90 MB                           |
+| Probes, their declines, and ticks | `PROBE_RETENTION_DAYS`, 14 days  | about 110 MB                          |
+| Daily figures, `daily_stats`      | `DAILY_RETENTION_DAYS`, 180 days | about 60 MB                           |
+
+**Raw exchanges store a repeated body once.** Most polls of one probe return the same body. An exchange whose response body equals the body of the exchange before it stores no body and says which exchange holds it. Nothing is lost, and the raw record stays readable with `json_extract`. The size above assumes that this takes a quoted probe from 18 KB to about 8 KB.
+
+**A third Cron Trigger, the maintenance cron, runs once a day.** `MAINTENANCE_CRON` names it. A day here is a UTC day, decided by `slot_start`, which never changes. One run does these steps in this order.
+
+1. Daily figures. It writes the figures of the complete days that have probes and no figures yet, oldest first, at most 3 days in one run. In normal running that is yesterday.
+2. Probes. It takes the oldest day that still has probes. If that day is older than `PROBE_RETENTION_DAYS` and its figures exist, it deletes that day's probes, declines, raw exchanges and ticks. A day is never deleted before its figures are written.
+3. Raw exchanges. It takes the oldest day that still has raw exchanges. If that day is older than `RAW_RETENTION_DAYS`, it deletes that day's raw exchanges.
+4. Old figures. It deletes the daily figures older than `DAILY_RETENTION_DAYS`.
+
+One run deletes at most one day of probes and one day of raw exchanges. That bounds the rows a run writes, which matters because D1 counts a deleted row against the same daily limit as an inserted one. When more than one day is waiting, the run logs `maintenance_backlog` with the number of days, and a person decides whether to spend the rows on a catch-up. Every step gives the same result when it runs twice: the figures are an upsert computed from one day's probes, and deleting a day that is gone deletes nothing. Each run logs what it did and the size of the database, so the size is visible long before it is a problem.
+
+**Daily figures.** One row for each network, day, corridor and tier: the number of probes and how many ended in each outcome; the lowest, mean and highest best spread; the highest operator count; the lowest, mean and highest time to the first quote; and the decline reasons with their counts. They are computed in SQL inside D1, so they cost the Worker no CPU time. They name no operator.
+
+**The history endpoint serves both.** `/api/v1/corridors/{id}/history.json` keeps `points`, the probes of the last `days` days, where `days` is at most `PROBE_RETENTION_DAYS`. It gains `daily`, the daily figures of the corridor for up to `DAILY_RETENTION_DAYS` days.
+
+The tick no longer deletes raw exchanges. `quotes_lost` looks back 7 days in the probes, so `PROBE_RETENTION_DAYS` must be at least 8, and `RAW_RETENTION_DAYS` may not be above it.
+
 `/api/v1/health` returns `503` with `prober_stale` from a fresh deploy until the first publish, because health reads the newest tick from the snapshot. Expect one red check after the first deploy.
 
 ## Answers to the open questions
