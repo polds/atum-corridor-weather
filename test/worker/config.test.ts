@@ -6,28 +6,86 @@ const parse = (overrides: Readonly<Record<string, string | undefined>>) =>
 	parseConfig({ ...env, ...overrides });
 
 describe("parseConfig", () => {
-	it("reads the deployed wrangler.jsonc variables", () => {
-		const result = parseConfig(env);
+	it("accepts the committed wrangler.jsonc: testnet, with no webhook in the file", () => {
+		// Nothing here pins a cadence, an amount or a threshold. Those are free to change.
+		expect(parseConfig(env)).toMatchObject({
+			ok: true,
+			config: {
+				network: "testnet",
+				gatewayUrl: "https://payment-gw.production-testnet.atum.xyz",
+				alertWebhook: null,
+			},
+		});
+	});
+
+	it("maps every variable into the config", () => {
+		const result = parseConfig({
+			NETWORK: "testnet",
+			MAINNET_ACK: "",
+			GATEWAY_URL: "https://payment-gw.production-testnet.atum.xyz",
+			REPOSITORY_URL: "https://github.com/someone/corridor-weather",
+			PROBE_ENABLED: "true",
+			PROBES_PER_TICK: "12",
+			AMOUNT_TIERS: '{"small":"1","typical":"25","large":"100"}',
+			POLL_INTERVAL_MS: "500",
+			QUOTE_WINDOW_SECONDS: "3",
+			SLOW_QUOTE_MS: "2500",
+			CORRIDOR_FILTER: "",
+			RAW_RETENTION_DAYS: "14",
+			PROBE_CRON: "*/15 * * * *",
+			CANARY_CRON: "3,18,33,48 * * * *",
+			ALERT_WEBHOOK_FORMAT: "slack",
+			ALERT_MIN_SEVERITY: "critical",
+			PUBLIC_URL: "",
+		});
 		if (!result.ok) throw new Error(result.errors.join("; "));
 		expect(result.config).toStrictEqual({
 			network: "testnet",
 			gatewayUrl: "https://payment-gw.production-testnet.atum.xyz",
-			repositoryUrl: "https://github.com/polds/atum-corridor-weather",
+			repositoryUrl: "https://github.com/someone/corridor-weather",
 			probeEnabled: true,
-			tickIntervalMinutes: 30,
-			probesPerTick: 30,
+			tickIntervalMinutes: 15,
+			probesPerTick: 12,
 			tierAmounts: { small: "1", typical: "25", large: "100" },
 			pollIntervalMs: 500,
 			quoteWindowSeconds: 3,
 			slowQuoteMs: 2500,
 			corridorFilter: null,
 			rawRetentionDays: 14,
-			probeCron: "*/30 * * * *",
-			canaryCron: "5,35 * * * *",
+			probeCron: "*/15 * * * *",
+			canaryCron: "3,18,33,48 * * * *",
 			alertWebhook: null,
 			alertMinSeverity: "critical",
 			publicUrl: null,
 		});
+	});
+
+	it("reads the tick interval from the probe cron, so the two cannot disagree", () => {
+		for (const [cron, minutes] of [
+			["*/10 * * * *", 10],
+			["*/30 * * * *", 30],
+			["0 * * * *", 60],
+			["0 */6 * * *", 360],
+		] as const) {
+			expect(parse({ PROBE_CRON: cron }), cron).toMatchObject({
+				ok: true,
+				config: { tickIntervalMinutes: minutes },
+			});
+		}
+		// A separate interval variable no longer exists, so a stale one changes nothing.
+		expect(parse({ PROBE_CRON: "*/10 * * * *", TICK_INTERVAL_MINUTES: "30" })).toMatchObject({
+			ok: true,
+			config: { tickIntervalMinutes: 10 },
+		});
+	});
+
+	it("refuses a probe cron that does not fire at one fixed interval", () => {
+		for (const cron of ["*/45 * * * *", "5,35 * * * *", "0 0 * * mon", "0 9-17 * * *"]) {
+			expect(parse({ PROBE_CRON: cron }), cron).toStrictEqual({
+				ok: false,
+				errors: [expect.stringMatching(/^PROBE_CRON: must fire at one fixed interval/)],
+			});
+		}
 	});
 
 	it("refuses mainnet without the acknowledgement", () => {

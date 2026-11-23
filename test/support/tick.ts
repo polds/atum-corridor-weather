@@ -14,12 +14,17 @@ import {
 import { fixtures } from "./fixtures";
 
 /**
- * The deployed configuration with test overrides. The tick interval is pinned,
+ * The deployed configuration with test overrides. The cadence is pinned,
  * because the tests place ticks on five-minute slots and the deployed cadence
  * is free to change.
  */
 export function testConfig(overrides: Readonly<Record<string, string>> = {}): Config {
-	const parsed = parseConfig({ ...env, TICK_INTERVAL_MINUTES: "5", ...overrides });
+	const parsed = parseConfig({
+		...env,
+		PROBE_CRON: "*/5 * * * *",
+		CANARY_CRON: "2-59/5 * * * *",
+		...overrides,
+	});
 	if (!parsed.ok) throw new Error(parsed.errors.join("; "));
 	return parsed.config;
 }

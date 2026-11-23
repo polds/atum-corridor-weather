@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { cronIntervalMinutes } from "../domain/cron";
 import type { TierAmounts } from "../domain/schedule";
 import type { AlertSeverity } from "../domain/snapshot";
 import { AMOUNT_TIERS, type Network } from "../domain/types";
@@ -180,7 +181,6 @@ const envSchema = z
 		GATEWAY_URL: z.string(),
 		REPOSITORY_URL: httpUrl,
 		PROBE_ENABLED: oneOf(["true", "false"]).transform((value) => value === "true"),
-		TICK_INTERVAL_MINUTES: integer(1, 1440),
 		PROBES_PER_TICK: integer(1, 200),
 		AMOUNT_TIERS: tierAmounts,
 		POLL_INTERVAL_MS: integer(100, 10_000),
@@ -217,6 +217,20 @@ const envSchema = z
 				message: `NETWORK=mainnet needs MAINNET_ACK=${MAINNET_ACK}, a human decision (docs/DESIGN.md, questions 1 and 4)`,
 			});
 		}
+	})
+	// The tick interval has one source, the probe cron, so the two cannot disagree.
+	.transform((env, context) => {
+		const tickIntervalMinutes = cronIntervalMinutes(env.PROBE_CRON);
+		if (tickIntervalMinutes === null) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["PROBE_CRON"],
+				message:
+					"must fire at one fixed interval, such as */10 * * * *, 0 * * * * or 0 */6 * * *. A step must divide the hour or the day",
+			});
+			return z.NEVER;
+		}
+		return { ...env, tickIntervalMinutes };
 	});
 
 /** Parses the Worker's environment variables. Bindings in `env` are ignored. */
@@ -236,7 +250,7 @@ export function parseConfig(env: unknown): ConfigResult {
 			gatewayUrl: value.GATEWAY_URL,
 			repositoryUrl: value.REPOSITORY_URL,
 			probeEnabled: value.PROBE_ENABLED,
-			tickIntervalMinutes: value.TICK_INTERVAL_MINUTES,
+			tickIntervalMinutes: value.tickIntervalMinutes,
 			probesPerTick: value.PROBES_PER_TICK,
 			tierAmounts: value.AMOUNT_TIERS,
 			pollIntervalMs: value.POLL_INTERVAL_MS,
