@@ -356,6 +356,74 @@ main:focus {
 	justify-items: start;
 }
 
+/* Loading ---------------------------------------------------------------- */
+
+/*
+ * The placeholder index.html ships inside <main>, shaped like the report. It is
+ * in the first paint, so the footer starts below it and nothing jumps when the
+ * script and the snapshot arrive.
+ */
+.skeleton {
+	display: grid;
+	gap: 20px;
+}
+
+.sk {
+	background: var(--wash);
+	border-radius: 8px;
+}
+
+.sk-title {
+	height: 30px;
+	width: min(60%, 340px);
+}
+
+.sk-line {
+	height: 14px;
+	width: min(85%, 520px);
+}
+
+.sk-tile {
+	height: 96px;
+	border-radius: 10px;
+}
+
+.sk-card {
+	min-height: 220px;
+	border-radius: 10px;
+}
+
+.sk-toolbar {
+	height: 44px;
+	width: min(100%, 640px);
+	margin-top: 12px;
+}
+
+/* About as tall as the corridor matrix, so the footer starts near where it ends up. */
+.sk-board {
+	min-height: max(60vh, 760px);
+	border-radius: 10px;
+}
+
+/* Without scripting nothing replaces the placeholder, and <noscript> says why. */
+@media (scripting: none) {
+	.skeleton {
+		display: none;
+	}
+}
+
+@keyframes sk-in {
+	from {
+		opacity: 0;
+	}
+}
+
+@keyframes sk-pulse {
+	50% {
+		opacity: 0.45;
+	}
+}
+
 /* Report ----------------------------------------------------------------- */
 
 .report {
@@ -1693,5 +1761,14 @@ details.card > summary {
 		transition:
 			box-shadow 80ms ease,
 			border-color 80ms ease;
+	}
+
+	/* The placeholder waits 150 ms before it shows, so a fast load never flashes it. */
+	.skeleton {
+		animation: sk-in 200ms ease-out 150ms backwards;
+	}
+
+	.sk {
+		animation: sk-pulse 1.8s ease-in-out infinite;
 	}
 }

@@ -92,6 +92,8 @@ const state: State = {
 };
 
 const main = byId("main");
+/** The loading placeholder that index.html ships, so the first paint and every later load show the same thing. */
+const skeleton = byId("boot");
 const banners = byId("banners");
 const networkPill = byId("network");
 let cleanups: (() => void)[] = [];
@@ -168,7 +170,7 @@ function render(opts: { preserveToolbar: boolean } = { preserveToolbar: false })
 	if (load.kind !== "ready") {
 		cleanup();
 		networkPill.hidden = true;
-		main.replaceChildren(renderLoadState(load));
+		showLoadState(load.kind === "loading" ? skeleton : renderLoadState(load));
 		document.title = "Corridor Weather";
 		return;
 	}
@@ -191,14 +193,19 @@ function cleanup(): void {
 	cleanups = [];
 }
 
-function renderLoadState(load: Exclude<Load, { kind: "ready" }>): HTMLElement {
+/** Puts `el` alone in main. An element already there stays in place, so its animation does not restart. */
+function showLoadState(el: HTMLElement): void {
+	if (el.parentNode !== main) {
+		main.replaceChildren(el);
+		return;
+	}
+	for (const child of [...main.children]) {
+		if (child !== el) child.remove();
+	}
+}
+
+function renderLoadState(load: Exclude<Load, { kind: "ready" | "loading" }>): HTMLElement {
 	switch (load.kind) {
-		case "loading":
-			return h(
-				"div",
-				{ class: "state", role: "status" },
-				h("p", undefined, "Loading current conditions…"),
-			);
 		case "missing":
 			return h(
 				"div",
