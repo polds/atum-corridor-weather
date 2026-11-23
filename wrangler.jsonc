@@ -38,8 +38,8 @@
 		"CORRIDOR_FILTER": "",
 		"MAINNET_ACK": "",
 		"REPOSITORY_URL": "https://github.com/polds/atum-corridor-weather",
-		"PROBE_CRON": "*/30 * * * *",
-		"CANARY_CRON": "5,35 * * * *",
+		"PROBE_CRON": "*/10 * * * *",
+		"CANARY_CRON": "2,12,22,32,42,52 * * * *",
 		// ALERT_WEBHOOK_URL is a secret: `wrangler secret put ALERT_WEBHOOK_URL`.
 		"ALERT_WEBHOOK_FORMAT": "slack",
 		"ALERT_MIN_SEVERITY": "critical",
