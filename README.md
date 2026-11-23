@@ -24,7 +24,7 @@ A corridor is a source token on one chain and a destination token on another. A 
 2. It picks the next batch of probe targets.
 3. It opens one quote request per target and polls its status until just after the quote deadline.
 4. It stores every probe in D1, with its raw HTTP exchanges.
-5. It rebuilds the public snapshot and the alert list.
+5. On every `PUBLISH_EVERY_TICKS`th tick, it rebuilds the public snapshot and the alert list from the store.
 
 Each probe ends in one outcome: `quoted`, `declined`, `silent`, `incomplete`, or `gateway_error`. The store keeps the quotes, the decline reasons, the timings, and the raw responses. A decline reason that is not a plain code is kept as `OTHER`. The public snapshot shows the number of distinct operators and the best and worst price. It does not show operator addresses.
 
@@ -46,7 +46,7 @@ Corridor Weather marks every request in three ways. Filter on any of them, for e
 
 Operators see the request body but not the HTTP headers, so the account is the marker to rely on. Run `pnpm run probe-identity` to derive the accounts yourself.
 
-The cadence is set in `wrangler.jsonc`: up to `PROBES_PER_TICK` probes on each run of `PROBE_CRON`. On the Workers Free plan a tick runs 6, because one run may make only 50 requests. The dashboard states the current cadence and how long one sweep of every corridor takes. Nobody has agreed a rate with the settler operators yet. A retried cron run reuses the same `request_id` values, so the gateway does not broadcast the same probe twice.
+The cadence is set in `wrangler.jsonc`: up to `PROBES_PER_TICK` probes on each run of `PROBE_CRON`. On the Workers Free plan a tick runs 6, because one run may make only 50 requests. A tick rebuilds the dashboard's snapshot only on every `PUBLISH_EVERY_TICKS`th tick, so the dashboard and the alerts change once per publish, not once per tick. The dashboard states the current cadence and how long one sweep of every corridor takes. Nobody has agreed a rate with the settler operators yet. A retried cron run reuses the same `request_id` values, so the gateway does not broadcast the same probe twice.
 
 To ask for a lower rate, or for probing to stop, [open an issue](https://github.com/polds/atum-corridor-weather/issues/new). The maintainer can lower `PROBES_PER_TICK` or set `PROBE_ENABLED=false` and redeploy. [docs/RUNBOOK.md](docs/RUNBOOK.md#change-the-probe-rate) has the steps.
 
@@ -72,7 +72,7 @@ You need Node 22 (see `.nvmrc`) and pnpm 10. Run `corepack enable pnpm` to use t
    pnpm run db:migrate:local
    ```
 
-4. If you want to run the Worker without sending quote requests, create a `.dev.vars` file that contains `PROBE_ENABLED=false`. Otherwise every tick sends real quote requests to the testnet gateway, from the probe accounts above.
+4. If you want to run the Worker without sending quote requests, create a `.dev.vars` file that contains `PROBE_ENABLED=false`. Otherwise every tick sends real quote requests to the testnet gateway, from the probe accounts above. `pnpm run dev` sets `PUBLISH_EVERY_TICKS=1`, so every local tick publishes the snapshot. A deployed tick publishes only on a publish slot.
 
 5. Start the Worker on `http://localhost:8787` with a local D1 database.
 
@@ -99,6 +99,7 @@ The variables and their current values are in the `vars` block of `wrangler.json
 | `PROBE_ENABLED`        | `false` stops probing.                                                                                                                                                                                                                                                                                                                                                     |
 | `PROBES_PER_TICK`      | The most probe targets in each tick. A tick runs fewer when `SUBREQUEST_LIMIT` does not cover them.                                                                                                                                                                                                                                                                        |
 | `SUBREQUEST_LIMIT`     | The subrequests one invocation may make on your Cloudflare plan: `50` on Workers Free, `10000` on Workers Paid. A tick plans its probes to fit, with 6 requests left unused. With `50` and the timing below, a tick runs 6 probes.                                                                                                                                         |
+| `PUBLISH_EVERY_TICKS`  | A tick rebuilds the snapshot and the alerts when its slot index is a multiple of this value, so the publish interval is the tick interval times this value. A rebuild reads the latest probe of every target, so publishing less often keeps D1 rows read within the Workers Free limit. `1` to `60`. Unset, every tick publishes.                                         |
 | `AMOUNT_TIERS`         | The amount for each tier, in whole tokens. The Worker converts it with the decimals from `/v1/defaults`. At most 18 fractional and 24 integer digits.                                                                                                                                                                                                                      |
 | `POLL_INTERVAL_MS`     | The wait between two status polls of one quote request. A shorter wait means more requests for each probe.                                                                                                                                                                                                                                                                 |
 | `QUOTE_WINDOW_SECONDS` | The quote window a probe asks for. The probe polls until 500 ms after it closes, then records the result.                                                                                                                                                                                                                                                                  |
@@ -107,7 +108,7 @@ The variables and their current values are in the `vars` block of `wrangler.json
 | `MAINNET_ACK`          | Must be `cadence-and-publishing-agreed` before the Worker accepts `NETWORK=mainnet`.                                                                                                                                                                                                                                                                                       |
 | `REPOSITORY_URL`       | The URL in the probe `User-Agent`. The deploy workflow replaces it with the URL of the repository that deploys, so a fork names itself.                                                                                                                                                                                                                                    |
 | `PROBE_CRON`           | The cron expression that runs a probe tick. It sets the cadence: the tick interval is read from it, so it must fire at one fixed interval, such as `*/10 * * * *`, `0 * * * *` or `0 */6 * * *`. It must equal one entry in `triggers.crons`, character for character. A trigger that matches neither `PROBE_CRON` nor `CANARY_CRON` does nothing and logs `unknown_cron`. |
-| `CANARY_CRON`          | The cron expression that runs the canary. It must equal one entry in `triggers.crons`, character for character.                                                                                                                                                                                                                                                            |
+| `CANARY_CRON`          | The cron expression that runs the canary. Run it a few minutes after each publish, so that it reads a fresh snapshot. It must equal one entry in `triggers.crons`, character for character.                                                                                                                                                                                |
 | `ALERT_WEBHOOK_URL`    | A secret, set with `wrangler secret put`. The canary posts alert changes to it. It must use `https`. Unset, the canary only logs.                                                                                                                                                                                                                                          |
 | `ALERT_WEBHOOK_FORMAT` | `slack` posts `{"text": ...}`, which Slack, Mattermost and Google Chat accept. `json` posts a structured body.                                                                                                                                                                                                                                                             |
 | `ALERT_MIN_SEVERITY`   | `critical` announces critical alerts only. `warning` also announces `slow_quotes`.                                                                                                                                                                                                                                                                                         |
@@ -118,7 +119,7 @@ The variables and their current values are in the `vars` block of `wrangler.json
 | Path                                  | Returns                                                                     |
 | ------------------------------------- | --------------------------------------------------------------------------- |
 | `/`                                   | The static dashboard                                                        |
-| `/api/v1/snapshot.json`               | Current conditions for every corridor, written once per tick                |
+| `/api/v1/snapshot.json`               | Current conditions for every corridor, written once per publish             |
 | `/api/v1/corridors/{id}/history.json` | History for one corridor                                                    |
 | `/api/v1/health`                      | `200` when no critical alert is active, `503` with the alert list otherwise |
 | `/metrics`                            | The same signals in Prometheus text format                                  |

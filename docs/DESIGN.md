@@ -128,7 +128,7 @@ The Worker fits the limits of its plan by construction. It does not find them by
 
 **A platform refusal is not a gateway error.** If `fetch` still reports that the subrequest limit was passed, the tick stops as `subrequest_limit`, stores nothing for the probe that hit it, and logs the tick as an error. The Worker recognizes the refusal by the word `subrequest` in the error text. On the deployed Worker the text was `Too many subrequests by single Worker invocation.` If Cloudflare changes it, the refused probes are stored as `gateway_error` with a null HTTP status, as before this change.
 
-**Probing and publishing run at different rates.** The two free limits bind different things. The subrequest limit caps the probes in one tick, so more probes need more ticks. The D1 read limit caps how often the snapshot is rebuilt, because the rebuild reads the latest probe of every target. So the probe cron runs often, and a tick publishes only when its slot index is a multiple of `PUBLISH_EVERY_TICKS`. The rule needs no stored state. The publish interval is the tick interval times `PUBLISH_EVERY_TICKS`. The snapshot carries it as `publishIntervalMinutes`, and `prober_stale` and the dashboard's own staleness check count in publish intervals.
+**Probing and publishing run at different rates.** The two free limits bind different things. The subrequest limit caps the probes in one tick, so more probes need more ticks. The D1 read limit caps how often the snapshot is rebuilt, because the rebuild reads the latest probe of every target. So the probe cron runs often, and a tick publishes only when its slot index is a multiple of `PUBLISH_EVERY_TICKS`. The rule needs no stored state. The publish interval is the tick interval times `PUBLISH_EVERY_TICKS`. The snapshot carries it as `publishIntervalMinutes`, and `prober_stale` and the dashboard's own staleness check count in publish intervals. `gateway_errors` judges the newest tick, which at a publish is the tick that publishes. A failing tick between two publishes raises nothing if the publishing tick is healthy. Its probes are still stored as `gateway_error` and show in the corridor history.
 
 Measured in the test pool with the 552 testnet corridors, 3 tiers and 1,600 stored probes. Cloudflare's own accounting on a deployed database is not measured.
 
@@ -141,7 +141,7 @@ The committed configuration runs 6 probes every 2 minutes and publishes every 10
 
 Rows written set the ceiling of the free plan, at roughly 9,000 probes a day. Rows read do not grow with the probe rate. On the paid plan, set `SUBREQUEST_LIMIT` to `10000` and choose any `PROBES_PER_TICK`.
 
-`/api/v1/health` returns `503` with `prober_stale` from a fresh deploy until the first tick finishes. Expect one red check after the first deploy.
+`/api/v1/health` returns `503` with `prober_stale` from a fresh deploy until the first publish, because health reads the newest tick from the snapshot. Expect one red check after the first deploy.
 
 ## Answers to the open questions
 

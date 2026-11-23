@@ -42,7 +42,7 @@ Do not deploy before DESIGN.md question 1 has an answer. Each tick broadcasts up
 
    `wrangler.deploy.jsonc` is ignored by git. Do not commit it.
 
-6. Wait for the first tick, up to one probe interval. Then check the health endpoint.
+6. Wait for the first publish, up to one publish interval: the tick interval times `PUBLISH_EVERY_TICKS`. Ticks before it store probes, but the dashboard and `/api/v1/snapshot.json` stay empty until a tick on a publish slot runs, and the health endpoint returns `503` with `prober_stale` until then. Then check the health endpoint.
 
    ```bash
    curl -i "$WORKER_URL/api/v1/health"
@@ -88,21 +88,29 @@ A deploy from your own machine uses `D1_DATABASE_ID="<the database_id>" pnpm run
 
 `wrangler deploy` replaces every variable set in the Cloudflare dashboard with the values in `wrangler.jsonc`. Change the rate in `wrangler.jsonc`, or the next deploy undoes your change.
 
-The broadcasts per hour are the probes a tick runs times the number of ticks per hour. A tick runs `PROBES_PER_TICK` probes, or as many as `SUBREQUEST_LIMIT` covers when that is fewer. The dashboard and `cadence.probesPerTick` in the snapshot show the number it runs.
+Two rates are set here, and different Cloudflare limits bind each one.
 
-| Plan         | `SUBREQUEST_LIMIT` | Probes a tick runs with the committed timing |
-| ------------ | ------------------ | -------------------------------------------- |
-| Workers Free | `50`               | 6                                            |
-| Workers Paid | `10000`            | `PROBES_PER_TICK`                            |
+- The probe rate. The broadcasts per hour are the probes a tick runs times the number of ticks per hour. A tick runs `PROBES_PER_TICK` probes, or as many as `SUBREQUEST_LIMIT` covers when that is fewer. The dashboard and `cadence.probesPerTick` in the snapshot show the number it runs.
+- The publish rate. A tick rebuilds the snapshot and the alerts only when its slot index is a multiple of `PUBLISH_EVERY_TICKS`, so the publish interval is the tick interval times `PUBLISH_EVERY_TICKS`. A rebuild reads the latest probe of every target, which is what costs D1 rows read. The snapshot carries the interval as `publishIntervalMinutes`.
 
-On Workers Free, raising `PROBES_PER_TICK` above 6 changes nothing. To probe faster there, run ticks more often. A tick that runs fewer probes than `PROBES_PER_TICK` logs `probes_capped`.
+The dashboard, `/api/v1/snapshot.json`, the alerts in `/api/v1/health` and the canary all change once per publish interval, not once per tick. Probes from the ticks between two publishes are stored as they run and appear in the next publish. `prober_stale` and the dashboard's stale banner wait three publish intervals.
+
+| Plan         | `SUBREQUEST_LIMIT` | Probes a tick runs with the committed timing | What limits the publish rate                                                     |
+| ------------ | ------------------ | -------------------------------------------- | -------------------------------------------------------------------------------- |
+| Workers Free | `50`               | 6                                            | 5 million D1 rows read a day. A publish reads about 11,900 rows on testnet today |
+| Workers Paid | `10000`            | `PROBES_PER_TICK`                            | Nothing in practice. `PUBLISH_EVERY_TICKS` can be `1`                            |
+
+The committed configuration runs 6 probes every 2 minutes, 180 broadcasts an hour, and publishes every 10 minutes, at :00, :10, :20 and so on. [DESIGN.md](./DESIGN.md#platform-limits) has the D1 rows that this reads and writes in a day.
+
+On Workers Free, raising `PROBES_PER_TICK` above 6 changes nothing. To probe faster there, run ticks more often, and raise `PUBLISH_EVERY_TICKS` so that publishes do not run more often. Rows written grow with the probe rate and cap it at roughly 9,000 probes a day. A tick that runs fewer probes than `PROBES_PER_TICK` logs `probes_capped`.
 
 1. Edit the `vars` block in `wrangler.jsonc`.
    - To send fewer probes per tick, lower `PROBES_PER_TICK`.
    - On Workers Paid, set `SUBREQUEST_LIMIT` to `10000`. Leave it at `50` on Workers Free. A value above your plan's limit brings the failed ticks back: see [A tick stops as `subrequest_limit`](#a-tick-stops-as-subrequest_limit).
    - To change how often ticks run, change the probe cron in two places, `triggers.crons` and `PROBE_CRON`. The two strings must be the same, character for character. The tick interval is read from `PROBE_CRON`, so it must fire at one fixed interval, such as `*/10 * * * *`, `0 * * * *` or `0 */6 * * *`.
-   - Move the canary cron the same way, in `triggers.crons` and `CANARY_CRON`, so that it runs a few minutes after each tick. A probe takes about 3.5 seconds, so a 6-probe tick takes under half a minute and a 30-probe tick about two minutes. Leave more than that.
-   - Change nothing else. No other setting and no test names the cadence. A test fails if a cron string and its variable disagree.
+   - To change how often the snapshot is rebuilt, change `PUBLISH_EVERY_TICKS`. A tick publishes when its slot index is a multiple of it. When the publish interval divides the hour, publishes start on the hour and then once per publish interval, so 2-minute ticks with `PUBLISH_EVERY_TICKS` at `5` publish at :00, :10, :20 and so on.
+   - Move the canary cron the same way, in `triggers.crons` and `CANARY_CRON`, so that it runs a few minutes after each publish, not after each tick. A probe takes about 3.5 seconds, so a 6-probe tick takes under half a minute and a 30-probe tick about two minutes. Leave more than that. The committed canary runs at :02, :12, :22 and so on, two minutes after each publish.
+   - Change nothing else. No other setting and no test names the cadence. A test fails if a cron string and its variable disagree, or if a publish has no canary run before the next publish.
 2. Open a pull request with the change.
 3. Merge it. The **Deploy** workflow deploys it after CI passes.
 
@@ -216,7 +224,7 @@ curl -s -X POST "https://api.datadoghq.com/api/v1/synthetics/tests/api" \
 
 ## Alert from Cloudflare alone
 
-Use this when no monitoring system polls the Worker. A second Cron Trigger, the canary cron, runs a few minutes after each tick. It posts to a webhook when an alert is raised and when it clears. [DESIGN.md](./DESIGN.md#alert-delivery) explains how it decides.
+Use this when no monitoring system polls the Worker. A second Cron Trigger, the canary cron, runs a few minutes after each publish. It posts to a webhook when an alert is raised and when it clears. [DESIGN.md](./DESIGN.md#alert-delivery) explains how it decides.
 
 You need a webhook URL that accepts a JSON `POST`. A Slack incoming webhook, a Mattermost incoming webhook and a Google Chat webhook all accept the default format.
 
@@ -275,7 +283,7 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
    D1_DATABASE_ID="<the database_id>" pnpm run deploy
    ```
 
-3. Wait one tick. Check that every tier of the corridor was quoted.
+3. Wait for the next publish. Check that every tier of the corridor was quoted.
 
    ```bash
    curl -s "$WORKER_URL/api/v1/snapshot.json" | jq '.corridors[] | {id, condition, tiers: [.tiers[] | {tier, outcome}]}'
@@ -291,7 +299,7 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
 
 5. Deploy from your machine again, as in step 2.
 
-6. Wait for the next tick. Check that the health endpoint returns `503` with a `quotes_lost` alert.
+6. Wait for the next publish. Check that the health endpoint returns `503` with a `quotes_lost` alert.
 
    ```bash
    curl -s -o /dev/null -w '%{http_code}\n' "$WORKER_URL/api/v1/health"
@@ -300,7 +308,7 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
 
 7. Check that your monitor fired once.
 
-8. Restore `AMOUNT_TIERS` to `{"small":"1","typical":"25","large":"100"}` and keep the filter. Deploy from your machine. The alert stays active until a tier of the corridor is quoted again, so health returns `200` only after the next tick quotes one. Without the filter, that corridor waits for its turn in the full sweep, which can take hours. The dashboard states how long one sweep takes.
+8. Restore `AMOUNT_TIERS` to `{"small":"1","typical":"25","large":"100"}` and keep the filter. Deploy from your machine. The alert stays active until a tier of the corridor is quoted again, so health returns `200` only after a tick quotes one and the next publish includes it. Without the filter, that corridor waits for its turn in the full sweep, which can take hours. The dashboard states how long one sweep takes.
 
 9. Wait until health returns `200`. Check that the monitor recovered.
 
@@ -324,12 +332,12 @@ If `SUBREQUEST_LIMIT` already matches the plan, Cloudflare counts a request that
 
 ## What each alert means
 
-| Alert            | Severity | Fires when                                                                                                | Check first                                                                                                                                                                             |
-| ---------------- | -------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prober_stale`   | Critical | No tick finished within three intervals                                                                   | Run `pnpm exec wrangler tail corridor-weather` through one tick and look for an exception. Run `pnpm exec wrangler deployments list` to see whether a recent deploy changed the Worker. |
-| `gateway_errors` | Critical | Discovery failed or listed no usable chain, or half or more of the probes in a tick were gateway errors   | Read `lastTick` in `/api/v1/snapshot.json`. `aborted` names the reason when a tick stopped early, and `gatewayErrors` counts the failed probes.                                         |
-| `quotes_lost`    | Critical | A corridor was quoted in the last 7 days, and the latest probe of every configured tier is now not quoted | Read the corridor history. Its outcome and decline reasons, for example `INSUFFICIENT_LIQUIDITY`, say what the operators answered.                                                      |
-| `slow_quotes`    | Warning  | The time to the first quote is above `SLOW_QUOTE_MS`                                                      | Compare `firstQuoteMs` across corridors in `/api/v1/snapshot.json` to see whether one corridor or all of them are slow.                                                                 |
+| Alert            | Severity | Fires when                                                                                                | Check first                                                                                                                                                                                                                |
+| ---------------- | -------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prober_stale`   | Critical | The newest tick in the snapshot finished more than three publish intervals ago, or no tick has finished   | Run `pnpm exec wrangler tail corridor-weather` through one publish slot and look for an exception in the tick or the publish. Run `pnpm exec wrangler deployments list` to see whether a recent deploy changed the Worker. |
+| `gateway_errors` | Critical | Discovery failed or listed no usable chain, or half or more of the probes in a tick were gateway errors   | Read `lastTick` in `/api/v1/snapshot.json`. `aborted` names the reason when a tick stopped early, and `gatewayErrors` counts the failed probes.                                                                            |
+| `quotes_lost`    | Critical | A corridor was quoted in the last 7 days, and the latest probe of every configured tier is now not quoted | Read the corridor history. Its outcome and decline reasons, for example `INSUFFICIENT_LIQUIDITY`, say what the operators answered.                                                                                         |
+| `slow_quotes`    | Warning  | The time to the first quote is above `SLOW_QUOTE_MS`                                                      | Compare `firstQuoteMs` across corridors in `/api/v1/snapshot.json` to see whether one corridor or all of them are slow.                                                                                                    |
 
 To read the history of a corridor, URL-encode its id.
 
