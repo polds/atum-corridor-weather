@@ -1,9 +1,10 @@
 // Fails unless the Wrangler config deploys the testnet prober and nothing else.
-// The deploy workflow runs it before it touches Cloudflare, and passes
-// `--config wrangler.jsonc` to Wrangler so no other config file can take over.
+// The deploy workflow runs it on the config it is about to deploy, before it
+// touches Cloudflare, and passes that same file to Wrangler with `--config`, so
+// no other config file can take over.
 // Mainnet waits on docs/DESIGN.md questions 1 and 4.
 //
-// Usage: node .github/scripts/assert-testnet.mjs [path to wrangler.jsonc]
+// Usage: node .github/scripts/assert-testnet.mjs [path to the Wrangler config]
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

@@ -26,20 +26,21 @@ Do not deploy before DESIGN.md question 1 has an answer. The default rate sends 
    pnpm exec wrangler d1 create corridor-weather
    ```
 
-3. Copy the `database_id` that the command prints into `d1_databases[0].database_id` in `wrangler.jsonc`. It replaces `00000000-0000-0000-0000-000000000000`.
+3. Keep the `database_id` that the command prints. Do not put it in `wrangler.jsonc`. The committed file holds a placeholder, so a fork of this repository never carries your database.
 
-4. Create the tables.
-
-   ```bash
-   pnpm exec wrangler d1 migrations apply corridor-weather --remote
-   ```
-
-5. Build the dashboard and deploy the Worker. Wrangler prints the Worker URL. Save it as `WORKER_URL`.
+4. Save the id as a repository variable named `D1_DATABASE_ID`. It is an identifier, not a credential, so it is a variable and not a secret.
 
    ```bash
-   pnpm run build:dashboard
-   pnpm exec wrangler deploy
+   gh variable set D1_DATABASE_ID --body "<the database_id>"
    ```
+
+5. Deploy from your machine. The command builds the dashboard, writes `wrangler.deploy.jsonc` with your id, checks that the config is testnet, creates the tables and deploys. Wrangler prints the Worker URL. Save it as `WORKER_URL`.
+
+   ```bash
+   D1_DATABASE_ID="<the database_id>" pnpm run deploy
+   ```
+
+   `wrangler.deploy.jsonc` is ignored by git. Do not commit it.
 
 6. Wait for the first tick, up to 30 minutes. Then check the health endpoint.
 
@@ -47,12 +48,12 @@ Do not deploy before DESIGN.md question 1 has an answer. The default rate sends 
    curl -i "$WORKER_URL/api/v1/health"
    ```
 
-7. Open a pull request that commits the new `database_id` to `wrangler.jsonc`.
+7. Check that no real id is staged. The id in `wrangler.jsonc` must still be `00000000-0000-0000-0000-000000000000`. A test fails if it is not.
 
 8. Create the `testnet` environment on GitHub.
 
    ```bash
-   gh api --method PUT repos/polds/atum-corridor-weather/environments/testnet
+   gh api --method PUT 'repos/{owner}/{repo}/environments/testnet'
    ```
 
 9. Create a Cloudflare API token that can edit Workers scripts and D1 databases in your account.
@@ -66,22 +67,22 @@ Do not deploy before DESIGN.md question 1 has an answer. The default rate sends 
 11. Save the token and the account id as secrets of the `testnet` environment. Each command asks for the value.
 
     ```bash
-    gh secret set CLOUDFLARE_API_TOKEN --env testnet --repo polds/atum-corridor-weather
-    gh secret set CLOUDFLARE_ACCOUNT_ID --env testnet --repo polds/atum-corridor-weather
+    gh secret set CLOUDFLARE_API_TOKEN --env testnet
+    gh secret set CLOUDFLARE_ACCOUNT_ID --env testnet
     ```
 
 12. In the branch protection rule for `main`, require the `ci-ok` status check. It passes only when every CI job passes.
 
-13. Run the deploy workflow once to check the secrets.
+13. Run the deploy workflow once to check the secrets and the variable.
 
     ```bash
     gh workflow run deploy.yml --ref main
     gh run watch
     ```
 
-From then on, the **Deploy** workflow runs after every **CI** run that passes on a push to `main`. It deploys the commit that CI tested. It checks that `wrangler.jsonc` sets `NETWORK` to `testnet`, that `GATEWAY_URL` is the testnet gateway, that `MAINNET_ACK` is empty and that no other Wrangler config file exists. It then applies the D1 migrations and runs `wrangler deploy`. When the two secrets are missing, as on a fork, the job ends with a "Deploy skipped" notice and deploys nothing.
+From then on, the **Deploy** workflow runs after every **CI** run that passes on a push to `main`. It deploys the commit that CI tested. It writes `wrangler.deploy.jsonc` from `wrangler.jsonc` with the database id in `D1_DATABASE_ID` and this repository's URL. It checks that the result sets `NETWORK` to `testnet`, that `GATEWAY_URL` is the testnet gateway, that `MAINNET_ACK` is empty and that no other Wrangler config file exists. It then applies the D1 migrations and runs `wrangler deploy`. When the two secrets or the `D1_DATABASE_ID` variable are missing, as on a fork or before this setup, the job skips with a notice and does not fail. A fork that sets its own secrets and its own variable deploys to its own account and database, and its probes carry its own repository URL in the `User-Agent`.
 
-A deploy from your own machine skips the workflow's testnet check. Read `wrangler.jsonc` before you run `wrangler deploy` by hand.
+A deploy from your own machine uses `D1_DATABASE_ID="<the database_id>" pnpm run deploy`, which runs the same testnet check. A plain `wrangler deploy` reads the placeholder id and Cloudflare refuses it.
 
 ## Change the probe rate
 
@@ -103,8 +104,7 @@ The broadcasts per hour are `PROBES_PER_TICK * 60 / TICK_INTERVAL_MINUTES`.
 2. Deploy from your machine to stop the probes now.
 
    ```bash
-   pnpm run build:dashboard
-   pnpm exec wrangler deploy
+   D1_DATABASE_ID="<the database_id>" pnpm run deploy
    ```
 
 3. Open a pull request with the same change and merge it. Otherwise the next deploy from `main` turns probing back on.
@@ -262,8 +262,7 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
 2. Deploy from your machine.
 
    ```bash
-   pnpm run build:dashboard
-   pnpm exec wrangler deploy
+   D1_DATABASE_ID="<the database_id>" pnpm run deploy
    ```
 
 3. Wait one tick. Check that every tier of the corridor was quoted.
