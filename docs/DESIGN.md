@@ -16,6 +16,8 @@ A Cloudflare Worker runs on a cron schedule. Each run is a tick. A tick does fiv
 4. It stores every probe, with its raw HTTP exchanges, in D1.
 5. On every `PUBLISH_EVERY_TICKS`th tick, it rebuilds the public snapshot and the alert list from the store.
 
+Once a day, a maintenance run reduces old probes to daily figures and deletes the days that are past their retention. See [Retention and long history](#retention-and-long-history).
+
 The Worker also serves the dashboard and four read-only endpoints.
 
 | Path                                  | Returns                                                            |
@@ -39,12 +41,12 @@ The design removes the ability to spend. It does not rely on care.
 
 Two shapes were sketched.
 
-|                  | Shape A: pure tick pipeline, one store     | Shape B: raw log in R2, views built on read     |
-| ---------------- | ------------------------------------------ | ----------------------------------------------- |
-| State owners     | D1 owns everything                         | R2 owns raw data, a second store owns views     |
-| Public read cost | One row read per page view                 | Aggregation on every read, or a second pipeline |
-| Recompute later  | Yes, raw exchanges are kept in `probe_raw` | Yes                                             |
-| Moving parts     | 1 Worker, 1 D1                             | 1 Worker, R2, plus a view store                 |
+|                  | Shape A: pure tick pipeline, one store                              | Shape B: raw log in R2, views built on read     |
+| ---------------- | ------------------------------------------------------------------- | ----------------------------------------------- |
+| State owners     | D1 owns everything                                                  | R2 owns raw data, a second store owns views     |
+| Public read cost | One row read per page view                                          | Aggregation on every read, or a second pipeline |
+| Recompute later  | Yes, raw exchanges are kept in `probe_raw` for `RAW_RETENTION_DAYS` | Yes                                             |
+| Moving parts     | 1 Worker, 1 D1                                                      | 1 Worker, R2, plus a view store                 |
 
 Shape A is the choice. It keeps one owner for each piece of state and still keeps the raw responses. Moving `probe_raw` to R2 later is a storage change, not a redesign.
 
@@ -112,13 +114,13 @@ The store splits the snapshot across rows, so its size does not depend on D1's 2
 
 The Worker fits the limits of its plan by construction. It does not find them by failing. The first deploy, on the Workers Free plan, showed why: a tick of 30 probes made 8, then every later `fetch` threw, and 22 probes were stored as gateway errors that the gateway never caused.
 
-| Limit                      | Workers Free | Workers Paid         | What the Worker does                                                                                         |
-| -------------------------- | ------------ | -------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Subrequests per invocation | 50           | 10,000               | A probe has a fixed worst-case cost, and a tick never plans more probes than `SUBREQUEST_LIMIT` covers       |
-| D1 rows written per day    | 100,000      | 50 million per month | A tick writes its probes. It rewrites the corridor list only when the list changes                           |
-| D1 rows read per day       | 5 million    | 25 billion per month | Only a publish reads the store widely, and a publish runs on every `PUBLISH_EVERY_TICKS`th tick              |
-| CPU time per invocation    | 10 ms        | 30 seconds           | Nothing yet. The CPU time of a tick on Cloudflare is not measured                                            |
-| Cron Trigger duration      | 15 minutes   | 15 minutes           | `scheduled()` awaits its work. It does not lean on `waitUntil`, which ends 30 seconds after an HTTP response |
+| Limit                      | Workers Free | Workers Paid         | What the Worker does                                                                                                                     |
+| -------------------------- | ------------ | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Subrequests per invocation | 50           | 10,000               | A probe has a fixed worst-case cost, and a tick never plans more probes than `SUBREQUEST_LIMIT` covers                                   |
+| D1 rows written per day    | 100,000      | 50 million per month | A tick writes its probes. It rewrites the corridor list only when the list changes. Maintenance deletes at most a day of each kind a run |
+| D1 rows read per day       | 5 million    | 25 billion per month | Only a publish reads the store widely, and a publish runs on every `PUBLISH_EVERY_TICKS`th tick                                          |
+| CPU time per invocation    | 10 ms        | 30 seconds           | Nothing yet. The CPU time of a tick on Cloudflare is not measured                                                                        |
+| Cron Trigger duration      | 15 minutes   | 15 minutes           | `scheduled()` awaits its work. It does not lean on `waitUntil`, which ends 30 seconds after an HTTP response                             |
 
 **A probe costs a fixed number of requests.** One create, then polls every `POLL_INTERVAL_MS` while the quote window is open, then one poll 500 ms after the quote deadline. The Worker knows the deadline, because it set it. With a 3 second window and a 500 ms interval that is 1 create and at most 6 polls: 7 requests, whatever the gateway does. A batch still `collecting` at that last poll is recorded as `incomplete`. The gateway closes a batch by its own clock, and the 500 ms covers the difference between the two clocks. In the three recorded testnet probes the batch was `ready` in a poll answered 213 to 246 ms after the deadline.
 
@@ -130,45 +132,56 @@ The Worker fits the limits of its plan by construction. It does not find them by
 
 **Probing and publishing run at different rates.** The two free limits bind different things. The subrequest limit caps the probes in one tick, so more probes need more ticks. The D1 read limit caps how often the snapshot is rebuilt, because the rebuild reads the latest probe of every target. So the probe cron runs often, and a tick publishes only when its slot index is a multiple of `PUBLISH_EVERY_TICKS`. The rule needs no stored state. The publish interval is the tick interval times `PUBLISH_EVERY_TICKS`. The snapshot carries it as `publishIntervalMinutes`, and `prober_stale` and the dashboard's own staleness check count in publish intervals. `gateway_errors` judges the newest tick, which at a publish is the tick that publishes. A failing tick between two publishes raises nothing if the publishing tick is healthy. Its probes are still stored as `gateway_error` and show in the corridor history.
 
-Measured in the test pool with the 552 testnet corridors, 3 tiers and 1,600 stored probes. Cloudflare's own accounting on a deployed database is not measured.
+Measured in the test pool (local `workerd` D1) with the 552 testnet corridors, 3 tiers, 15 days of probes at the committed rate and 180 days of daily figures. The rows a tick reads and a publish writes are from an earlier measurement with 1,600 stored probes. Cloudflare's own accounting on a deployed database is not measured.
 
-| Step                    | D1 rows read | D1 rows written  |
-| ----------------------- | ------------ | ---------------- |
-| A tick, without publish | 14           | 2, and 8 a probe |
-| A publish               | 11,908       | 9                |
+| Step                            | D1 rows read | D1 rows written                                   |
+| ------------------------------- | ------------ | ------------------------------------------------- |
+| A tick, without publish         | 14           | 2, and 7 for a quoted probe, 8 for a declined one |
+| A publish                       | 12,650       | 9                                                 |
+| A maintenance run, steady state | 34,716       | 13,320                                            |
 
-The committed configuration runs 6 probes every 2 minutes and publishes every 10 minutes. In a day that is 720 ticks, 4,320 probes and 144 publishes: about 1.7 million rows read, a third of the free limit, and about 46,000 rows written, under half of it. The written figure includes an estimate of 2 rows for each raw record that retention deletes.
+The committed configuration runs 6 probes every 2 minutes and publishes every 10 minutes. In a day that is 720 ticks, 4,320 probes and 144 publishes: about 1.9 million rows read, under two fifths of the free limit, and about 47,000 rows written, under half of it. Of those, the ticks write 32,300, the publishes 1,300 and the maintenance run 13,300.
 
-Rows written set the ceiling of the free plan, at roughly 9,000 probes a day. Rows read do not grow with the probe rate. On the paid plan, set `SUBREQUEST_LIMIT` to `10000` and choose any `PROBES_PER_TICK`.
+The local D1 counts a deleted row as one written row, without its index entries, while an inserted row counts once more for each index. If Cloudflare counts a deleted index entry as it counts an inserted one, the maintenance run writes about 34,000 rows and the day about 68,000. That is inferred, not measured.
+
+Rows written set the ceiling of the free plan, at roughly 6,500 to 10,000 probes a day, depending on that count. Rows read do not grow with the probe rate. On the paid plan, set `SUBREQUEST_LIMIT` to `10000` and choose any `PROBES_PER_TICK`.
 
 ### Retention and long history
 
 D1 on the free plan caps a database at 500 MB, and nothing may depend on a person noticing that it is full. So the store grows to a planned size and holds it, and old detail is reduced to daily figures before it is deleted.
 
-Measured in the test pool, one stored probe takes about 19.9 KB when it was quoted and 7.5 KB when it was declined. The raw exchanges are 18.2 KB and 5.6 KB of that. At 4,320 probes a day that is 30 to 85 MB a day, so 14 days of everything does not fit.
+Measured in the test pool, one stored probe takes 9.9 KB when it was quoted and 5.8 KB when it was declined. The raw exchanges are 8.6 KB and 4.6 KB of that. A probe whose raw exchanges are gone takes 1.3 KB. A row of daily figures takes 230 bytes. Without the deduplication described next, a quoted probe took 19.9 KB and a declined one 7.5 KB, and 14 days of everything did not fit.
 
-| Data                              | Kept for                         | Size at the committed rate, estimated |
-| --------------------------------- | -------------------------------- | ------------------------------------- |
-| Raw exchanges, `probe_raw`        | `RAW_RETENTION_DAYS`, 3 days     | about 90 MB                           |
-| Probes, their declines, and ticks | `PROBE_RETENTION_DAYS`, 14 days  | about 110 MB                          |
-| Daily figures, `daily_stats`      | `DAILY_RETENTION_DAYS`, 180 days | about 60 MB                           |
+| Data                              | Kept for, besides today          | Size at the committed rate, from the measured sizes |
+| --------------------------------- | -------------------------------- | --------------------------------------------------- |
+| Raw exchanges, `probe_raw`        | `RAW_RETENTION_DAYS`, 3 days     | 35 MB a day, about 104 MB                           |
+| Probes, their declines, and ticks | `PROBE_RETENTION_DAYS`, 14 days  | 5.5 MB a day, about 77 MB                           |
+| Daily figures, `daily_stats`      | `DAILY_RETENTION_DAYS`, 180 days | 0.4 MB a day, about 68 MB                           |
 
-**Raw exchanges store a repeated body once.** Most polls of one probe return the same body. An exchange whose response body equals the body of the exchange before it stores no body and says which exchange holds it. Nothing is lost, and the raw record stays readable with `json_extract`. The size above assumes that this takes a quoted probe from 18 KB to about 8 KB.
+That is about 250 MB. Just before the daily run, each kind also holds today and the day the run is about to delete, so the database peaks near 300 MB. The size D1 reports fell as the measured run deleted rows, so the reported size follows the rows held. Each value is at least 1, and none means "keep forever".
 
-**A third Cron Trigger, the maintenance cron, runs once a day.** `MAINTENANCE_CRON` names it. A day here is a UTC day, decided by `slot_start`, which never changes. One run does these steps in this order.
+**Raw exchanges store a repeated body once.** Most polls of one probe return the same body. An exchange whose response body equals the body of the exchange before it stores `{"sameAs": n}` in place of the body, where `n` is the index of the first exchange of that run, which holds the text. Nothing is lost, and the raw record stays readable with `json_extract` in one step. Rows stored before this change hold every body as text and read the same way. The 900 KiB budget applies to the stored form, so a probe whose polls repeat one large body is less often cut. A body cut for the budget is never the target of a marker.
+
+**A third Cron Trigger, the maintenance cron, runs once a day.** `MAINTENANCE_CRON` names it. A day here is a UTC day, decided by `slot_start`, which never changes. A probe id embeds its slot start (`cw1.{network}.{yyyymmdd}T{hhmm}Z...`), so the probes, declines and raw exchanges of one day are one key range in each table, and no new index is needed to find or delete them. Day `D` is past a retention of `R` days on day `T` when `D < T - R`. A day is complete 15 minutes after it ends, the Cron Trigger duration limit, when no tick of it can still be storing probes. One run does these steps in this order.
 
 1. Daily figures. It writes the figures of the complete days that have probes and no figures yet, oldest first, at most 3 days in one run. In normal running that is yesterday.
-2. Probes. It takes the oldest day that still has probes. If that day is older than `PROBE_RETENTION_DAYS` and its figures exist, it deletes that day's probes, declines, raw exchanges and ticks. A day is never deleted before its figures are written.
-3. Raw exchanges. It takes the oldest day that still has raw exchanges. If that day is older than `RAW_RETENTION_DAYS`, it deletes that day's raw exchanges.
-4. Old figures. It deletes the daily figures older than `DAILY_RETENTION_DAYS`.
+2. Probes. It takes the oldest day that still has probes or ticks. If that day is past `PROBE_RETENTION_DAYS` and has figures, or has no probes, it deletes that day's probes, declines, raw exchanges and ticks. A day is never deleted before its figures are written.
+3. Raw exchanges. It takes the oldest day that still has raw exchanges, after step 2. If that day is past `RAW_RETENTION_DAYS`, it deletes that day's raw exchanges.
+4. Old figures. It takes the oldest day that has figures. If that day is past `DAILY_RETENTION_DAYS`, it deletes that day's figures.
 
-One run deletes at most one day of probes and one day of raw exchanges. That bounds the rows a run writes, which matters because D1 counts a deleted row against the same daily limit as an inserted one. When more than one day is waiting, the run logs `maintenance_backlog` with the number of days, and a person decides whether to spend the rows on a catch-up. Every step gives the same result when it runs twice: the figures are an upsert computed from one day's probes, and deleting a day that is gone deletes nothing. Each run logs what it did and the size of the database, so the size is visible long before it is a problem.
+One run deletes at most one day of probes, one day of raw exchanges and one day of figures. That bounds the rows a run writes, which matters because D1 counts a deleted row against the same daily limit as an inserted one. Lowering `DAILY_RETENTION_DAYS` from 180 to 30 would otherwise delete 250,000 rows in one run, more than two days of the free limit. When expired days are still stored after a run, the run logs `maintenance_backlog` with the number of days, and a person decides whether to spend the rows on a catch-up. The count runs from the oldest stored day to the newest expired one, so a gap with no probes counts too. Every step gives the same result when it runs twice: the figures are an upsert computed from one day's probes, a delete step reads the oldest day as the store holds it, and deleting a day that is gone deletes nothing. Each run logs what it did, the rows it read and wrote, and the size of the database, so the size is visible long before it is a problem.
 
-**Daily figures.** One row for each network, day, corridor and tier: the number of probes and how many ended in each outcome; the lowest, mean and highest best spread; the highest operator count; the lowest, mean and highest time to the first quote; and the decline reasons with their counts. They are computed in SQL inside D1, so they cost the Worker no CPU time. They name no operator.
+In steady state the run writes 1,656 rows of figures, deletes 5,688 rows of probes, declines and ticks, 4,320 raw exchanges and 1,656 rows of figures, and reads 34,716 rows, half of them to compute the figures. Measured in the test pool.
 
-**The history endpoint serves both.** `/api/v1/corridors/{id}/history.json` keeps `points`, the probes of the last `days` days, where `days` is at most `PROBE_RETENTION_DAYS`. It gains `daily`, the daily figures of the corridor for up to `DAILY_RETENTION_DAYS` days.
+**Daily figures.** One row for each network, day, corridor and tier: the number of probes and how many ended in each outcome; the lowest, mean and highest best spread; the highest operator count; the lowest, mean and highest time to the first quote; and the decline reasons with the sum of their counts. A mean is over the probes that have the value. They are computed in SQL inside D1, one statement for a day, so they cost the Worker no CPU time. They name no operator.
 
-The tick no longer deletes raw exchanges. `quotes_lost` looks back 7 days in the probes, so `PROBE_RETENTION_DAYS` must be at least 8, and `RAW_RETENTION_DAYS` may not be above it.
+The table is `WITHOUT ROWID` with the key `(network, day, corridor_id, tier)`, so a row costs one written row. The key leads with the day because the maintenance run checks, writes and deletes one day at a time, each a key range. The history of one corridor names its days, `day IN (...) AND corridor_id = ?`, which is one key seek a day: 1,076 rows read for 180 days of one corridor. The other order, corridor first, would serve the history as one range but would make every daily check and delete scan the table, about 300,000 rows (inferred). An extra index in either order costs at least 1,656 written rows a day.
+
+**The history endpoint serves both.** `/api/v1/corridors/{id}/history.json` keeps `points`, the probes of the last `days` days, where `days` is at most `PROBE_RETENTION_DAYS`. It gains `daily`, the daily figures of the corridor for up to `DAILY_RETENTION_DAYS` complete days, oldest first. The field names are in `CorridorHistory` in `src/domain/snapshot.ts`.
+
+**Indexes.** The tick no longer deletes raw exchanges, so `probe_raw_created` has no reader and is dropped: one written row less for each probe. `probes_history` stays. Without it a publish reads 76,525 rows instead of 12,650, because the `quotes_lost` query looks for the first probe after a corridor's last quote by `started_at`. At 144 publishes a day that is 11 million rows read, twice the free limit. Measured in the test pool.
+
+`quotes_lost` looks back 7 days in the probes, so `PROBE_RETENTION_DAYS` must be at least 8, `QUOTES_LOST_WINDOW_DAYS` plus the day the run is in. `RAW_RETENTION_DAYS` may not be above it, because a day's raw exchanges go with its probes. `DAILY_RETENTION_DAYS` may not be below it, or step 4 would delete the figures of a day whose probes remain, and step 1 would write them again on the next run.
 
 `/api/v1/health` returns `503` with `prober_stale` from a fresh deploy until the first publish, because health reads the newest tick from the snapshot. Expect one red check after the first deploy.
 
@@ -251,7 +264,7 @@ Two ways exist to learn that an alert fired. Use either, or both.
 
 The push path exists for a deployment that has only Cloudflare.
 
-The Worker has two Cron Triggers, and `scheduled()` tells them apart by `controller.cron`. `PROBE_CRON` and `CANARY_CRON` name the two expressions. A trigger whose expression matches neither does nothing and logs an error, so a mistyped variable can never turn the canary trigger into a second probe tick. The probe cron runs a tick. The canary cron, a few minutes after each publish, builds the health report that `/api/v1/health` serves and compares its alerts with the alerts it has already announced.
+The Worker has three Cron Triggers, and `scheduled()` tells them apart by `controller.cron`. `PROBE_CRON`, `CANARY_CRON` and `MAINTENANCE_CRON` name the three expressions. A trigger whose expression matches none of them does nothing and logs an error, so a mistyped variable can never turn the canary trigger into a second probe tick. The maintenance cron is described in [Retention and long history](#retention-and-long-history). The probe cron runs a tick. The canary cron, a few minutes after each publish, builds the health report that `/api/v1/health` serves and compares its alerts with the alerts it has already announced.
 
 - An alert that is new is announced as raised.
 - An alert that is gone from the health report is announced as cleared. Raising `ALERT_MIN_SEVERITY` does not clear an alert that is still active.

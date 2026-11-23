@@ -42,6 +42,8 @@ Do not deploy before DESIGN.md question 1 has an answer. Each tick broadcasts up
 
    `wrangler.deploy.jsonc` is ignored by git. Do not commit it.
 
+   The Worker has three Cron Triggers: the probe cron, the canary cron and the daily maintenance cron. The Workers Free plan allows 5 Cron Triggers per account, shared by every Worker in it, so this Worker needs 3 of them free. A deploy that would pass the limit fails.
+
 6. Wait for the first publish, up to one publish interval: the tick interval times `PUBLISH_EVERY_TICKS`. Ticks before it store probes, but the dashboard and `/api/v1/snapshot.json` stay empty until a tick on a publish slot runs, and the health endpoint returns `503` with `prober_stale` until then. Then check the health endpoint.
 
    ```bash
@@ -97,12 +99,12 @@ The dashboard, `/api/v1/snapshot.json`, the alerts in `/api/v1/health` and the c
 
 | Plan         | `SUBREQUEST_LIMIT` | Probes a tick runs with the committed timing | What limits the publish rate                                                     |
 | ------------ | ------------------ | -------------------------------------------- | -------------------------------------------------------------------------------- |
-| Workers Free | `50`               | 6                                            | 5 million D1 rows read a day. A publish reads about 11,900 rows on testnet today |
+| Workers Free | `50`               | 6                                            | 5 million D1 rows read a day. A publish reads about 12,700 rows on testnet today |
 | Workers Paid | `10000`            | `PROBES_PER_TICK`                            | Nothing in practice. `PUBLISH_EVERY_TICKS` can be `1`                            |
 
 The committed configuration runs 6 probes every 2 minutes, 180 broadcasts an hour, and publishes every 10 minutes, at :00, :10, :20 and so on. [DESIGN.md](./DESIGN.md#platform-limits) has the D1 rows that this reads and writes in a day.
 
-On Workers Free, raising `PROBES_PER_TICK` above 6 changes nothing. To probe faster there, run ticks more often, and raise `PUBLISH_EVERY_TICKS` so that publishes do not run more often. Rows written grow with the probe rate and cap it at roughly 9,000 probes a day. A tick that runs fewer probes than `PROBES_PER_TICK` logs `probes_capped`.
+On Workers Free, raising `PROBES_PER_TICK` above 6 changes nothing. To probe faster there, run ticks more often, and raise `PUBLISH_EVERY_TICKS` so that publishes do not run more often. Rows written grow with the probe rate and cap it at roughly 6,500 to 10,000 probes a day, counting the maintenance run that later deletes each probe. Faster probing also fills the database faster: see [Storage and retention](#storage-and-retention). A tick that runs fewer probes than `PROBES_PER_TICK` logs `probes_capped`.
 
 1. Edit the `vars` block in `wrangler.jsonc`.
    - To send fewer probes per tick, lower `PROBES_PER_TICK`.
@@ -110,7 +112,8 @@ On Workers Free, raising `PROBES_PER_TICK` above 6 changes nothing. To probe fas
    - To change how often ticks run, change the probe cron in two places, `triggers.crons` and `PROBE_CRON`. The two strings must be the same, character for character. The tick interval is read from `PROBE_CRON`, so it must fire at one fixed interval, such as `*/10 * * * *`, `0 * * * *` or `0 */6 * * *`.
    - To change how often the snapshot is rebuilt, change `PUBLISH_EVERY_TICKS`. A tick publishes when its slot index is a multiple of it. When the publish interval divides the hour, publishes start on the hour and then once per publish interval, so 2-minute ticks with `PUBLISH_EVERY_TICKS` at `5` publish at :00, :10, :20 and so on.
    - Move the canary cron the same way, in `triggers.crons` and `CANARY_CRON`, so that it runs a few minutes after each publish, not after each tick. A probe takes about 3.5 seconds, so a 6-probe tick takes under half a minute and a 30-probe tick about two minutes. Leave more than that. The committed canary runs at :02, :12, :22 and so on, two minutes after each publish.
-   - Change nothing else. No other setting and no test names the cadence. A test fails if a cron string and its variable disagree, or if a publish has no canary run before the next publish.
+   - Keep the maintenance cron, `MAINTENANCE_CRON` and its entry in `triggers.crons`, at a minute when no publish and no canary runs. The committed 03:37 is an odd minute, so no 2-minute tick runs then either.
+   - Change nothing else. No other setting and no test names the cadence. A test fails if a cron string and its variable disagree, if a publish has no canary run before the next publish, or if the maintenance cron fires with a publish or a canary.
 2. Open a pull request with the change.
 3. Merge it. The **Deploy** workflow deploys it after CI passes.
 
@@ -257,7 +260,7 @@ Know these limits before you rely on it.
 - The canary runs inside the Worker. If Cloudflare stops invoking the Worker, no message is sent. Only an outside check on `/api/v1/health` catches that.
 - A fresh deploy has no finished tick. The first canary run can announce `prober_stale`, and the next can clear it.
 - Each run sends at most one message. An alert that stays active is announced once.
-- A change to the canary's schedule needs two edits in `wrangler.jsonc`: its entry in `triggers.crons`, and `CANARY_CRON`. They must be the same string. A trigger that matches neither `PROBE_CRON` nor `CANARY_CRON` does nothing, and the Worker logs `unknown_cron`.
+- A change to the canary's schedule needs two edits in `wrangler.jsonc`: its entry in `triggers.crons`, and `CANARY_CRON`. They must be the same string. A trigger that matches none of `PROBE_CRON`, `CANARY_CRON` and `MAINTENANCE_CRON` does nothing, and the Worker logs `unknown_cron`.
 
 To stop the messages, delete the secret.
 
@@ -346,9 +349,65 @@ id=$(curl -s "$WORKER_URL/api/v1/health" | jq -r 'first(.alerts[] | select(.corr
 curl -s "$WORKER_URL/api/v1/corridors/$id/history.json" | jq '.points[-5:]'
 ```
 
+## Storage and retention
+
+D1 on Workers Free caps a database at 500 MB. Corridor Weather keeps each kind of data for a fixed number of days besides today and deletes the oldest day once a day. [DESIGN.md](./DESIGN.md#retention-and-long-history) explains the design and has the measured sizes.
+
+| Data                                               | Kept for                         | Size at the committed rate |
+| -------------------------------------------------- | -------------------------------- | -------------------------- |
+| Raw HTTP exchanges, `probe_raw`                    | `RAW_RETENTION_DAYS`, 3 days     | about 104 MB               |
+| Probes, decline reasons and ticks                  | `PROBE_RETENTION_DAYS`, 14 days  | about 77 MB                |
+| Daily figures of each corridor tier, `daily_stats` | `DAILY_RETENTION_DAYS`, 180 days | about 68 MB                |
+
+Expect about 250 MB, and up to about 300 MB just before the daily run. The history endpoint serves the probes in `points` and the daily figures in `daily`.
+
+### Read the maintenance log line
+
+The maintenance cron runs at 03:37 UTC and logs one line.
+
+```bash
+pnpm exec wrangler tail --config wrangler.jsonc --search maintenance
+```
+
+```js
+{
+  event: 'maintenance',
+  figuresDays: [ '2026-11-22' ],     // days whose daily figures this run wrote
+  probesDayDeleted: '2026-11-08',    // the day whose probes, declines, raw exchanges and ticks it deleted
+  rawDayDeleted: '2026-11-19',       // the day whose raw exchanges it deleted
+  figuresDayDeleted: '2026-05-26',   // the day whose daily figures it deleted
+  backlogDays: 0,                    // expired days still stored after this run
+  databaseBytes: 173416448,          // the size of the database after the run
+  rowsRead: 34716,
+  rowsWritten: 13320
+}
+```
+
+In steady state each run writes yesterday's figures and deletes one day of each kind, and `backlogDays` is 0. A `null` means no day of that kind had expired. A run that fails logs `maintenance_failed` with the error, and the next run does the same work, because every step starts from what the database holds.
+
+### `maintenance_backlog`
+
+The run logs `maintenance_backlog` at warn level when expired days are still stored after it, for example after the cron did not run for some days or after a retention value was lowered. `days` is the most days waiting of any kind and `waiting` gives each kind. One run deletes one day of each kind, so a backlog does not shrink on its own while every day adds a day to delete.
+
+To catch up, run the maintenance more often for a while.
+
+1. In `wrangler.jsonc`, change `MAINTENANCE_CRON` and its entry in `triggers.crons` to an hourly minute that no tick, publish or canary uses, for example `37 * * * *`.
+2. Deploy, as in [Change the probe rate](#change-the-probe-rate).
+3. Watch the log until `backlogDays` is 0, then restore both strings and deploy again.
+
+Each extra run deletes one day of each kind and costs about 13,300 D1 rows written at the committed rate, and up to about 34,000 if Cloudflare counts deleted index entries. Ticks, publishes and the daily run use about 47,000 a day, so on Workers Free you can afford between one and four extra runs a day: four by the local count, one if deleted index entries count. Past 100,000 rows written in a day, D1 refuses writes until the next UTC day, and ticks store nothing.
+
+### Check the database size
+
+```bash
+pnpm exec wrangler d1 info corridor-weather
+```
+
+The maintenance log line also carries `databaseBytes` once a day. If the size grows past about 300 MB, check for a backlog first, then lower `RAW_RETENTION_DAYS`, which holds most of the data.
+
 ## Read raw probe data from D1
 
-The tables are `ticks`, `corridors`, `corridor_sets`, `probes`, `probe_declines`, `probe_raw`, `snapshots`, and `alert_notifications`. `corridor_sets` holds the hash of the current corridor list. `corridors.last_seen` is the slot in which the current list was last written, not the last tick. `alert_notifications` holds the alerts the canary has announced and not yet cleared. `probe_raw` keeps the HTTP exchanges of each probe. Each response body is the text the gateway sent, so read it with `json_extract` after parsing the string. Response bodies are cut when one probe passes 900 KiB. `snapshots` holds the snapshot in parts. Concatenate `snapshot_json` in `part` order. Read the columns from the database itself, because migrations can change them.
+The tables are `ticks`, `corridors`, `corridor_sets`, `probes`, `probe_declines`, `probe_raw`, `daily_stats`, `snapshots`, and `alert_notifications`. `corridor_sets` holds the hash of the current corridor list. `corridors.last_seen` is the slot in which the current list was last written, not the last tick. `alert_notifications` holds the alerts the canary has announced and not yet cleared. `daily_stats` holds one row of daily figures per network, UTC day, corridor and tier. `probe_raw` keeps the HTTP exchanges of each probe for `RAW_RETENTION_DAYS`. Each response body is the text the gateway sent, so read it with `json_extract` after parsing the string. A body equal to the one before it is stored once: the later exchange holds `{"sameAs": n}`, where `n` is the index of the exchange that holds the text. Rows stored before that change hold every body as text. Response bodies are cut when one probe passes 900 KiB. `snapshots` holds the snapshot in parts. Concatenate `snapshot_json` in `part` order. Read the columns from the database itself, because migrations can change them.
 
 1. Print the schema of every table.
 
@@ -363,6 +422,22 @@ The tables are `ticks`, `corridors`, `corridor_sets`, `probes`, `probe_declines`
    ```
 
 3. Add `--json` to get the result as JSON, for example to pipe it to `jq`.
+
+4. To read every exchange of one probe with its response body, following the `sameAs` markers, put this query in a file, replace the probe id, and run it with `--file`. It reads old and new rows alike.
+
+   ```sql
+   SELECT e.key AS exchange,
+     json_extract(e.value, '$.method') AS method,
+     json_extract(e.value, '$.path') AS path,
+     json_extract(e.value, '$.status') AS status,
+     CASE WHEN json_type(e.value, '$.responseBody.sameAs') IS NULL
+       THEN json_extract(e.value, '$.responseBody')
+       ELSE json_extract(r.raw_json, '$.exchanges[' || json_extract(e.value, '$.responseBody.sameAs') || '].responseBody')
+     END AS response_body
+   FROM probe_raw AS r, json_each(r.raw_json, '$.exchanges') AS e
+   WHERE r.probe_id = 'cw1.testnet.20261122T1035Z.7ae33acb9dd6.small'
+   ORDER BY e.key;
+   ```
 
 To query the database that `pnpm run dev` uses, replace `--remote` with `--local`.
 
