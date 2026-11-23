@@ -5,9 +5,11 @@
 	"compatibility_date": "2026-11-01",
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
-	// The probe cron runs a tick. The canary cron, five minutes later, announces alert
+	// The probe cron runs a tick. The canary cron, a few minutes later, announces alert
 	// changes. scheduled() tells them apart by PROBE_CRON and CANARY_CRON and ignores
-	// any other trigger, so keep these two entries equal to those two vars.
+	// any other trigger, so keep these two entries equal to those two vars. The tick
+	// interval is read from PROBE_CRON. To change the cadence, change these two
+	// entries and those two vars, and nothing else.
 	"triggers": { "crons": ["*/10 * * * *", "2,12,22,32,42,52 * * * *"] },
 	"assets": {
 		"directory": "dist/dashboard",
@@ -28,7 +30,6 @@
 		"NETWORK": "testnet",
 		"GATEWAY_URL": "https://payment-gw.production-testnet.atum.xyz",
 		"PROBE_ENABLED": "true",
-		"TICK_INTERVAL_MINUTES": "30",
 		"PROBES_PER_TICK": "30",
 		"AMOUNT_TIERS": "{\"small\":\"1\",\"typical\":\"25\",\"large\":\"100\"}",
 		"POLL_INTERVAL_MS": "500",

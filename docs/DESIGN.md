@@ -86,7 +86,7 @@ The brief's rule is met in its purpose, which is a correct `quote_selector`, and
 
 ### Scheduling is stateless and idempotent
 
-The target list is every corridor at every tier, sorted by id. Slot `n` probes `PROBES_PER_TICK` targets starting at offset `n * PROBES_PER_TICK` modulo the list length. The slot index is `floor(now / interval)`. No cursor is stored.
+The target list is every corridor at every tier, sorted by id. Slot `n` probes `PROBES_PER_TICK` targets starting at offset `n * PROBES_PER_TICK` modulo the list length. The slot index is `floor(now / interval)`. The interval is read from the probe cron, so the cron and the slot length cannot disagree. No cursor is stored.
 
 The `request_id` of a probe is `cw1.{network}.{slotStart}.{corridorHash}.{tier}`. A retried cron run produces the same ids. The gateway then returns the original batch with `idempotent_replay: true` and does not broadcast to operators a second time.
 
@@ -122,9 +122,9 @@ Answers marked "measured" come from three tagged testnet quote requests sent on 
 
 Measured. Every gateway response carries `x-ratelimit-limit: 30`. The remaining count recovered within two seconds, so the limit is close to 30 requests per second per caller. One probe costs one `POST` and about seven `GET` calls over three seconds. The gateway limit does not constrain a polite prober.
 
-Needs a person. The limit that matters is the work each broadcast gives to settler operators, and nobody has agreed a number. The default is deliberately low: 30 sequential probes every 30 minutes, which is 60 broadcasts per hour. The repository owner set that rate on 2026-11-23. The first default was 30 probes every 5 minutes. Testnet has 552 corridors and 3 tiers, so one full sweep takes about 27.6 hours. `PROBES_PER_TICK`, the cron schedule and `CORRIDOR_FILTER` change the rate. `PROBE_ENABLED=false` stops it.
+Needs a person. The limit that matters is the work each broadcast gives to settler operators, and nobody has agreed a number. The cadence is `PROBES_PER_TICK` sequential probes on each run of the probe cron, and `wrangler.jsonc` holds both. The repository owner sets it, and the dashboard shows the current value. As a guide, 30 probes every 10 minutes is 180 broadcasts per hour. Testnet has 552 corridors and 3 tiers, which is 1,656 targets, so at that rate one full sweep takes about 9.2 hours. `PROBES_PER_TICK`, the cron schedule and `CORRIDOR_FILTER` change the rate. `PROBE_ENABLED=false` stops it.
 
-**Decision needed before deploy.** Confirm 60 broadcasts per hour on testnet with whoever runs the settlers, or give a number.
+**Decision needed before deploy.** Confirm the rate in `wrangler.jsonc` with whoever runs the settlers, or give a number.
 
 ### 2. Does the depositor need to be a funded or real account?
 
@@ -193,7 +193,7 @@ Two ways exist to learn that an alert fired. Use either, or both.
 
 The push path exists for a deployment that has only Cloudflare.
 
-The Worker has two Cron Triggers, and `scheduled()` tells them apart by `controller.cron`. `PROBE_CRON` and `CANARY_CRON` name the two expressions. A trigger whose expression matches neither does nothing and logs an error, so a mistyped variable can never turn the canary trigger into a second probe tick. The probe cron runs a tick. The canary cron, five minutes later, builds the health report that `/api/v1/health` serves and compares its alerts with the alerts it has already announced.
+The Worker has two Cron Triggers, and `scheduled()` tells them apart by `controller.cron`. `PROBE_CRON` and `CANARY_CRON` name the two expressions. A trigger whose expression matches neither does nothing and logs an error, so a mistyped variable can never turn the canary trigger into a second probe tick. The probe cron runs a tick. The canary cron, a few minutes later, builds the health report that `/api/v1/health` serves and compares its alerts with the alerts it has already announced.
 
 - An alert that is new is announced as raised.
 - An alert that is gone from the health report is announced as cleared. Raising `ALERT_MIN_SEVERITY` does not clear an alert that is still active.

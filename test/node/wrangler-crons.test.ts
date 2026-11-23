@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { cronIntervalMinutes } from "../../src/domain/cron";
 
 /** wrangler.jsonc as Wrangler reads it: JSON with comments. */
 function wranglerConfig(): { triggers?: { crons?: string[] }; vars?: Record<string, string> } {
@@ -23,5 +24,14 @@ describe("wrangler.jsonc Cron Triggers", () => {
 		expect(canary).toEqual(expect.any(String));
 		expect(probe).not.toBe(canary);
 		expect([...crons].sort()).toStrictEqual([probe, canary].sort());
+	});
+
+	it("give the probe cron one fixed interval, which is the tick interval", () => {
+		const probe = wranglerConfig().vars?.PROBE_CRON ?? "";
+		expect(cronIntervalMinutes(probe), probe).toEqual(expect.any(Number));
+	});
+
+	it("leave no separate tick interval to fall out of step with the cron", () => {
+		expect(wranglerConfig().vars).not.toHaveProperty("TICK_INTERVAL_MINUTES");
 	});
 });
