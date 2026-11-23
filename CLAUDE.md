@@ -19,7 +19,7 @@ Read `docs/DESIGN.md` before you change behavior. It holds the design, the safet
 ```bash
 pnpm install
 pnpm run check        # lint, typecheck, test, build. Run before every commit.
-pnpm run dev          # local Worker with a local D1. Trigger a tick: curl "http://localhost:8787/__scheduled?cron=*/5+*+*+*+*"
+pnpm run dev          # local Worker with a local D1. Trigger a tick: curl "http://localhost:8787/__scheduled?cron=*/30+*+*+*+*"
 pnpm run lint:fix
 ```
 

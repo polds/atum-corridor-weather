@@ -14,7 +14,7 @@ describe("parseConfig", () => {
 			gatewayUrl: "https://payment-gw.production-testnet.atum.xyz",
 			repositoryUrl: "https://github.com/polds/atum-corridor-weather",
 			probeEnabled: true,
-			tickIntervalMinutes: 5,
+			tickIntervalMinutes: 30,
 			probesPerTick: 30,
 			tierAmounts: { small: "1", typical: "25", large: "100" },
 			pollIntervalMs: 500,
@@ -22,8 +22,8 @@ describe("parseConfig", () => {
 			slowQuoteMs: 2500,
 			corridorFilter: null,
 			rawRetentionDays: 14,
-			probeCron: "*/5 * * * *",
-			canaryCron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *",
+			probeCron: "*/30 * * * *",
+			canaryCron: "5,35 * * * *",
 			alertWebhook: null,
 			alertMinSeverity: "critical",
 			publicUrl: null,
@@ -154,7 +154,7 @@ describe("parseConfig", () => {
 	});
 
 	it("refuses one expression for both crons", () => {
-		expect(parse({ CANARY_CRON: "*/5 * * * *" })).toMatchObject({
+		expect(parse({ PROBE_CRON: "*/5 * * * *", CANARY_CRON: "*/5 * * * *" })).toMatchObject({
 			ok: false,
 			errors: [expect.stringMatching(/^CANARY_CRON: /)],
 		});

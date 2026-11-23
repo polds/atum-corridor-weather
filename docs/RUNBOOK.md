@@ -12,7 +12,7 @@ export WORKER_URL="https://corridor-weather.<your-subdomain>.workers.dev"
 
 ## First deploy
 
-Do not deploy before DESIGN.md question 1 has an answer. The default rate sends about 360 quote broadcasts per hour to the settler operators.
+Do not deploy before DESIGN.md question 1 has an answer. The default rate sends 60 quote broadcasts per hour to the settler operators.
 
 1. Log in to Cloudflare.
 
@@ -41,7 +41,7 @@ Do not deploy before DESIGN.md question 1 has an answer. The default rate sends 
    pnpm exec wrangler deploy
    ```
 
-6. Wait for the first tick, up to 5 minutes. Then check the health endpoint.
+6. Wait for the first tick, up to 30 minutes. Then check the health endpoint.
 
    ```bash
    curl -i "$WORKER_URL/api/v1/health"
@@ -91,7 +91,7 @@ The broadcasts per hour are `PROBES_PER_TICK * 60 / TICK_INTERVAL_MINUTES`.
 
 1. Edit the `vars` block in `wrangler.jsonc`.
    - To send fewer probes per tick, lower `PROBES_PER_TICK`.
-   - To run ticks less often, change the probe cron in two places, `triggers.crons` and `PROBE_CRON`, and set `TICK_INTERVAL_MINUTES` to the same interval. For example, use `*/10 * * * *` with `"10"`. The two cron strings must be the same, character for character. Leave the canary cron alone.
+   - To run ticks less often, change the probe cron in two places, `triggers.crons` and `PROBE_CRON`, and set `TICK_INTERVAL_MINUTES` to the same interval. For example, use `0 * * * *` with `"60"`. The two cron strings must be the same, character for character. Leave the canary cron alone.
 2. Open a pull request with the change.
 3. Merge it. The **Deploy** workflow deploys it after CI passes.
 
@@ -206,7 +206,7 @@ curl -s -X POST "https://api.datadoghq.com/api/v1/synthetics/tests/api" \
 
 ## Alert from Cloudflare alone
 
-Use this when no monitoring system polls the Worker. A second Cron Trigger, the canary cron, runs two minutes after each tick. It posts to a webhook when an alert is raised and when it clears. [DESIGN.md](./DESIGN.md#alert-delivery) explains how it decides.
+Use this when no monitoring system polls the Worker. A second Cron Trigger, the canary cron, runs five minutes after each tick. It posts to a webhook when an alert is raised and when it clears. [DESIGN.md](./DESIGN.md#alert-delivery) explains how it decides.
 
 You need a webhook URL that accepts a JSON `POST`. A Slack incoming webhook, a Mattermost incoming webhook and a Google Chat webhook all accept the default format.
 
@@ -232,7 +232,7 @@ You need a webhook URL that accepts a JSON `POST`. A Slack incoming webhook, a M
    pnpm exec wrangler tail --config wrangler.jsonc
    ```
 
-   Expect `event: 'canary'` every five minutes. A failed delivery logs `event: 'canary_delivery_failed'` with the reason, and the next run sends the same message again.
+   Expect `event: 'canary'` every 30 minutes. A failed delivery logs `event: 'canary_delivery_failed'` with the reason, and the next run sends the same message again.
 
 Know these limits before you rely on it.
 
@@ -291,7 +291,7 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
 
 7. Check that your monitor fired once.
 
-8. Restore `AMOUNT_TIERS` to `{"small":"1","typical":"25","large":"100"}` and keep the filter. Deploy from your machine. The alert stays active until a tier of the corridor is quoted again, so health returns `200` only after the next tick quotes one. Without the filter, that corridor waits for its turn in the full sweep, about 4.6 hours.
+8. Restore `AMOUNT_TIERS` to `{"small":"1","typical":"25","large":"100"}` and keep the filter. Deploy from your machine. The alert stays active until a tier of the corridor is quoted again, so health returns `200` only after the next tick quotes one. Without the filter, that corridor waits for its turn in the full sweep, about 27.6 hours.
 
 9. Wait until health returns `200`. Check that the monitor recovered.
 
