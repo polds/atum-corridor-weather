@@ -12,6 +12,7 @@
 		"dev": "pnpm run build:dashboard && wrangler dev --test-scheduled",
 		"build": "pnpm run build:dashboard && wrangler deploy --dry-run --outdir dist/worker",
 		"build:dashboard": "node scripts/build-dashboard.mjs",
+		"deploy": "pnpm run build:dashboard && node scripts/render-deploy-config.mjs && node .github/scripts/assert-testnet.mjs wrangler.deploy.jsonc && wrangler d1 migrations apply corridor-weather --remote --config wrangler.deploy.jsonc && wrangler deploy --config wrangler.deploy.jsonc",
 		"typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p dashboard/tsconfig.json",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",

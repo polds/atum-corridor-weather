@@ -18,7 +18,8 @@
 		{
 			"binding": "DB",
 			"database_name": "corridor-weather",
-			// Replace with the id that `wrangler d1 create corridor-weather` prints. See docs/RUNBOOK.md.
+			// A placeholder. Do not commit a real id. A deploy takes the id from the
+			// D1_DATABASE_ID variable through scripts/render-deploy-config.mjs. See docs/RUNBOOK.md.
 			"database_id": "00000000-0000-0000-0000-000000000000",
 			"migrations_dir": "migrations"
 		}

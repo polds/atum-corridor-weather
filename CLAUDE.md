@@ -12,6 +12,7 @@ Read `docs/DESIGN.md` before you change behavior. It holds the design, the safet
 - Do not import `@atumlabs/payment-gateway-client` under `src/`. The Worker builds quote request bodies itself in `src/gateway/quote-request.ts`. The SDK (6.0.0 or later) is a dev dependency, and the conformance test requires the two bodies to be equal. Change the builder and that test together.
 - Testnet only. `NETWORK=mainnet` needs `MAINNET_ACK` and a human decision (DESIGN.md, questions 1 and 4).
 - Do not send quote requests to the real gateway from tests or CI. Tests use the fixtures in `test/fixtures/gateway`.
+- Commit nothing that belongs to one deployment. `wrangler.jsonc` holds a placeholder D1 id, and a deploy takes the real one from the `D1_DATABASE_ID` variable. A fork must not inherit anyone's database, account or webhook.
 - Log every doc gap or API surprise in `FRICTION.md` when you hit it.
 
 ## Commands

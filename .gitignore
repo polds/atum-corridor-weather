@@ -6,3 +6,4 @@ coverage/
 *.log
 .audit/
 .claude/worktrees/
+wrangler.deploy.jsonc
