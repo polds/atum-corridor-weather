@@ -82,7 +82,7 @@ The brief's rule is met in its purpose, which is a correct `quote_selector`, and
 
 ### A probe is a small state machine
 
-`create` then `poll` until the batch leaves `collecting` or the poll budget ends. The result is one `ProbeOutcome` variant: `quoted`, `declined`, `silent`, `incomplete`, or `gateway_error`. See `src/domain/types.ts`. A probe never throws. Every failure becomes a `gateway_error` record, because a gateway failure is a measurement.
+`create`, then `poll` on a fixed schedule that ends just after the quote deadline. [Platform limits](#platform-limits) gives the schedule. The result is one `ProbeOutcome` variant: `quoted`, `declined`, `silent`, `incomplete`, or `gateway_error`. See `src/domain/types.ts`. A probe never throws. Every failure becomes a `gateway_error` record, because a gateway failure is a measurement.
 
 ### Scheduling is stateless and idempotent
 
@@ -110,7 +110,23 @@ The store splits the snapshot across rows, so its size does not depend on D1's 2
 
 ### Platform limits
 
-One probe makes about eight gateway calls: one create and about seven polls. A tick of 30 probes makes about 240 subrequests and runs for about two minutes. The Workers free plan allows 50 subrequests per invocation, so the default cadence needs the Workers Paid plan. On the free plan, set `PROBES_PER_TICK` to 5 or lower. These numbers are estimates from local runs, not measurements on Cloudflare.
+The Worker fits the limits of its plan by construction. It does not find them by failing. The first deploy, on the Workers Free plan, showed why: a tick of 30 probes made 8, then every later `fetch` threw, and 22 probes were stored as gateway errors that the gateway never caused.
+
+| Limit                      | Workers Free | Workers Paid         | What the Worker does                                                                                         |
+| -------------------------- | ------------ | -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Subrequests per invocation | 50           | 10,000               | A probe has a fixed worst-case cost, and a tick never plans more probes than `SUBREQUEST_LIMIT` covers       |
+| D1 rows written per day    | 100,000      | 50 million per month | A tick writes its probes. It rewrites the corridor list only when the list changes                           |
+| Cron Trigger duration      | 15 minutes   | 15 minutes           | `scheduled()` awaits its work. It does not lean on `waitUntil`, which ends 30 seconds after an HTTP response |
+
+**A probe costs a fixed number of requests.** One create, then polls every `POLL_INTERVAL_MS` while the quote window is open, then one poll just after the quote deadline. The Worker knows the deadline, because it set it. With a 3 second window and a 500 ms interval that is 1 create and at most 6 polls: 7 requests, whatever the gateway does. A batch still `collecting` at that last poll is recorded as `incomplete`.
+
+**A tick plans within its budget.** One request reads `/v1/defaults`. The rest of `SUBREQUEST_LIMIT` is divided by the cost of a probe, and the tick probes that many targets or `PROBES_PER_TICK`, whichever is smaller. `SUBREQUEST_LIMIT` defaults to 50, the lowest limit of any plan, so the default configuration runs anywhere: 7 probes per tick. The rotation uses the planned number, so no target is skipped. When the budget is the smaller number, the tick logs `probes_capped`, and the snapshot reports the probes per tick it really runs.
+
+**The corridor list is written when it changes.** The store keeps a hash of the discovered list. A tick whose list has the same hash writes no corridor row. Writing all 552 rows and their index on every tick was about 1,100 rows per tick, which alone passes the free daily limit at one tick every 10 minutes.
+
+**A platform refusal is not a gateway error.** If `fetch` still reports that the subrequest limit was passed, the tick stops as `subrequest_limit` and stores nothing for the probe that hit it.
+
+To probe faster on the free plan, run ticks more often, not larger. The D1 read limit, 5 million rows a day, is the next bound: one tick reads a few thousand rows to rebuild the snapshot, so one tick every 5 minutes is comfortable and one every minute is not. On the paid plan, set `SUBREQUEST_LIMIT` to the plan's limit and choose any `PROBES_PER_TICK`.
 
 `/api/v1/health` returns `503` with `prober_stale` from a fresh deploy until the first tick finishes. Expect one red check after the first deploy.
 
