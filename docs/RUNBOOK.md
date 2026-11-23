@@ -91,7 +91,7 @@ The broadcasts per hour are `PROBES_PER_TICK * 60 / TICK_INTERVAL_MINUTES`.
 
 1. Edit the `vars` block in `wrangler.jsonc`.
    - To send fewer probes per tick, lower `PROBES_PER_TICK`.
-   - To run ticks less often, change the cron expression in `triggers.crons` and set `TICK_INTERVAL_MINUTES` to the same interval. For example, use `*/10 * * * *` with `"10"`.
+   - To run ticks less often, change the probe cron, which is the first entry in `triggers.crons`, and set `TICK_INTERVAL_MINUTES` to the same interval. For example, use `*/10 * * * *` with `"10"`. Leave the second entry alone: it is the canary cron.
 2. Open a pull request with the change.
 3. Merge it. The **Deploy** workflow deploys it after CI passes.
 
@@ -133,7 +133,7 @@ An empty `CORRIDOR_FILTER` probes every corridor.
 
 ## Wire the canary into monitoring
 
-The Worker computes alerts but sends no notification. Your monitoring sends the page.
+Two ways exist to learn that an alert fired. With a monitoring system, poll the Worker as this section describes. With only Cloudflare, go to [Alert from Cloudflare alone](#alert-from-cloudflare-alone). You can use both.
 
 ### HTTP check
 
@@ -204,9 +204,52 @@ curl -s -X POST "https://api.datadoghq.com/api/v1/synthetics/tests/api" \
 	--data @health-test.json
 ```
 
+## Alert from Cloudflare alone
+
+Use this when no monitoring system polls the Worker. A second Cron Trigger, the canary cron, runs two minutes after each tick. It posts to a webhook when an alert is raised and when it clears. [DESIGN.md](./DESIGN.md#alert-delivery) explains how it decides.
+
+You need a webhook URL that accepts a JSON `POST`. A Slack incoming webhook, a Mattermost incoming webhook and a Google Chat webhook all accept the default format.
+
+1. Store the URL as a secret. Wrangler asks for the value. Paste the URL there, not on the command line.
+
+   ```bash
+   pnpm exec wrangler secret put ALERT_WEBHOOK_URL --config wrangler.jsonc
+   ```
+
+   A secret is not a variable. A later `wrangler deploy` keeps it.
+
+2. If the receiver does not accept `{"text": ...}`, set `ALERT_WEBHOOK_FORMAT` to `json` in the `vars` block of `wrangler.jsonc`.
+
+3. To get links in each message, set `PUBLIC_URL` in the same block to the address of the deployed Worker.
+
+4. To be told about `slow_quotes` as well, set `ALERT_MIN_SEVERITY` to `warning`.
+
+5. Deploy the change, as in [Change the probe rate](#change-the-probe-rate).
+
+6. Check that the canary runs. The Worker logs one line per canary run.
+
+   ```bash
+   pnpm exec wrangler tail --config wrangler.jsonc
+   ```
+
+   Expect `event: 'canary'` every five minutes. A failed delivery logs `event: 'canary_delivery_failed'` with the reason, and the next run sends the same message again.
+
+Know these limits before you rely on it.
+
+- The canary runs inside the Worker. If Cloudflare stops invoking the Worker, no message is sent. Only an outside check on `/api/v1/health` catches that.
+- A fresh deploy has no finished tick. The first canary run can announce `prober_stale`, and the next can clear it.
+- Each run sends at most one message. An alert that stays active is announced once.
+- A change to the canary's schedule needs two edits in `wrangler.jsonc`: the second entry in `triggers.crons`, and `CANARY_CRON`. They must be the same string.
+
+To stop the messages, delete the secret.
+
+```bash
+pnpm exec wrangler secret delete ALERT_WEBHOOK_URL --config wrangler.jsonc
+```
+
 ## Run the canary drill
 
-The drill proves that the monitor fires when a corridor stops quoting. **Nobody has run this drill yet.** Run it once after you wire up monitoring.
+The drill proves that the monitor fires when a corridor stops quoting. **Nobody has run this drill yet.** Run it once after you wire up monitoring. With the canary webhook, the same steps prove the push path: expect one raised message after step 6 and one cleared message after step 9.
 
 The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 2026-11-22 it quoted 1 USDC and declined 10,000 USDC with `INSUFFICIENT_LIQUIDITY`. Pause any merge to `main` during the drill, because a deploy from `main` resets the configuration.
 
@@ -277,7 +320,7 @@ curl -s "$WORKER_URL/api/v1/corridors/$id/history.json" | jq '.points[-5:]'
 
 ## Read raw probe data from D1
 
-The tables are `ticks`, `corridors`, `probes`, `probe_declines`, `probe_raw`, and `snapshots`. `probe_raw` keeps the HTTP exchanges of each probe. Each response body is the text the gateway sent, so read it with `json_extract` after parsing the string. Response bodies are cut when one probe passes 900 KiB. `snapshots` holds the snapshot in parts. Concatenate `snapshot_json` in `part` order. Read the columns from the database itself, because migrations can change them.
+The tables are `ticks`, `corridors`, `probes`, `probe_declines`, `probe_raw`, `snapshots`, and `alert_notifications`. `alert_notifications` holds the alerts the canary has announced and not yet cleared. `probe_raw` keeps the HTTP exchanges of each probe. Each response body is the text the gateway sent, so read it with `json_extract` after parsing the string. Response bodies are cut when one probe passes 900 KiB. `snapshots` holds the snapshot in parts. Concatenate `snapshot_json` in `part` order. Read the columns from the database itself, because migrations can change them.
 
 1. Print the schema of every table.
 

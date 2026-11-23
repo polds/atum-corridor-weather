@@ -25,5 +25,5 @@ Include the commit or deployment you tested, the steps to reproduce, and what an
 These properties hold by design. A change that breaks one is a vulnerability.
 
 - **No keys.** The probe accounts have no private key. Each address comes from the hash of a public label, so no key for it exists.
-- **No secrets in the Worker.** The Worker's only bindings are one D1 database and the static assets. The only secret is the Cloudflare deploy token, which lives in the `testnet` environment on GitHub and reaches only the deploy steps.
+- **No secret in the Worker that can sign or spend.** The Worker's only bindings are one D1 database and the static assets. Its one optional secret is `ALERT_WEBHOOK_URL`, the address it posts alert changes to. The only other secret is the Cloudflare deploy token, which lives in the `testnet` environment on GitHub and reaches only the deploy steps.
 - **Three routes.** The gateway client allows `GET /v1/defaults`, `POST /v1/payments/quote-requests` to create a quote request, and one read of that quote request. It refuses every other path before it sends anything. It never sends `sender_auth` and never calls an award endpoint.

@@ -52,6 +52,7 @@ Shape A is the choice. It keeps one owner for each piece of state and still keep
 src/domain/    Pure logic. Corridors, amounts, schedule, spread, outcome, conditions, alerts, snapshot.
 src/gateway/   The network boundary. Response schemas, the route-limited client, the SDK request builder.
 src/store/     The D1 repository.
+src/notify/   The alert webhook sender.
 src/worker/    The shell. Config parsing, the scheduled handler, the read-only routes.
 dashboard/     The static page. It imports the snapshot types from src/domain/snapshot.ts.
 ```
@@ -205,7 +206,7 @@ Two limits are inherent, and no code inside the Worker can remove them.
 - If Cloudflare stops invoking the Worker, nothing inside it can say so. Only an outside check on `/api/v1/health` sees that.
 - A fresh deploy has no finished tick, so the first canary run can announce `prober_stale` and the next can clear it.
 
-The webhook sender is not the gateway client. It posts JSON to the one configured URL, requires `https`, never follows a redirect, and sends nothing that names an operator. `ALERT_WEBHOOK_FORMAT` chooses between a `{"text": ...}` body, which Slack, Mattermost and Google Chat accept, and a structured body for anything else. With no `ALERT_WEBHOOK_URL`, the canary only logs.
+The webhook sender is not the gateway client. It posts JSON to the one configured URL, requires `https` (plain `http` only on a loopback address, for local runs), never follows a redirect, and sends nothing that names an operator. `ALERT_WEBHOOK_FORMAT` chooses between a `{"text": ...}` body, which Slack, Mattermost and Google Chat accept, and a structured body for anything else. With no `ALERT_WEBHOOK_URL`, the canary only logs.
 
 ## What is not built
 

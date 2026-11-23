@@ -32,6 +32,7 @@ To run the Worker locally, follow the quick start in [README.md](README.md#quick
 - `src/domain/` is pure. It has no I/O, no clock, and no globals. Pass time and randomness in.
 - `src/gateway/` and `src/worker/config.ts` are the only places that parse external data. Use zod there and trust the types everywhere else.
 - `src/store/` is the only code that talks to D1.
+- `src/notify/` is the only code that posts to the alert webhook. The webhook URL is a secret: log its origin only.
 - `dashboard/` imports types from `src/domain/snapshot.ts` and nothing else from `src/`.
 
 ## Safety rules
