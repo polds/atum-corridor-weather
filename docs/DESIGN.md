@@ -169,12 +169,14 @@ A corridor's condition comes from the latest probe of each tier.
 
 The condition does not rank operators and does not depend on who quoted.
 
-| Alert            | Fires when                                                                                         | Severity |
-| ---------------- | -------------------------------------------------------------------------------------------------- | -------- |
-| `prober_stale`   | No tick finished within three intervals                                                            | Critical |
-| `gateway_errors` | Discovery failed or listed no usable chain, or half or more of a tick's probes were gateway errors | Critical |
-| `quotes_lost`    | A corridor tier was quoted on its previous probe and is not quoted now                             | Critical |
-| `slow_quotes`    | Time to first quote is above `SLOW_QUOTE_MS`                                                       | Warning  |
+| Alert            | Fires when                                                                                                | Severity |
+| ---------------- | --------------------------------------------------------------------------------------------------------- | -------- |
+| `prober_stale`   | No tick finished within three intervals                                                                   | Critical |
+| `gateway_errors` | Discovery failed or listed no usable chain, or half or more of a tick's probes were gateway errors        | Critical |
+| `quotes_lost`    | A corridor was quoted in the last 7 days, and the latest probe of every configured tier is now not quoted | Critical |
+| `slow_quotes`    | Time to first quote is above `SLOW_QUOTE_MS`                                                              | Warning  |
+
+`quotes_lost` describes a state, not a moment. It stays active until a tier of the corridor is quoted again, or until 7 days pass with no quote. A corridor that still quotes at some tier raises no alert: the dashboard shows it as cloudy.
 
 `/api/v1/health` returns `503` when a critical alert is active. An outside monitor only needs an HTTP check on that path. A deployment with no outside monitor uses the canary cron, described next. The public page shows alerts but pages nobody.
 
@@ -191,13 +193,13 @@ Two ways exist to learn that an alert fired. Use either, or both.
 
 The push path exists for a deployment that has only Cloudflare.
 
-The Worker has two Cron Triggers, and `scheduled()` tells them apart by `controller.cron`. The probe cron runs a tick. The canary cron, two minutes later, builds the health report that `/api/v1/health` serves and compares its alerts with the alerts it has already announced.
+The Worker has two Cron Triggers, and `scheduled()` tells them apart by `controller.cron`. `PROBE_CRON` and `CANARY_CRON` name the two expressions. A trigger whose expression matches neither does nothing and logs an error, so a mistyped variable can never turn the canary trigger into a second probe tick. The probe cron runs a tick. The canary cron, two minutes later, builds the health report that `/api/v1/health` serves and compares its alerts with the alerts it has already announced.
 
 - An alert that is new is announced as raised.
-- An alert that is gone is announced as cleared.
+- An alert that is gone from the health report is announced as cleared. Raising `ALERT_MIN_SEVERITY` does not clear an alert that is still active.
 - An alert that is still active is not announced again.
 
-One run sends at most one message, which lists what was raised and what was cleared. The canary records an announcement only after the webhook answers `2xx`, so a failed delivery is tried again on the next run. The announced alerts live in the `alert_notifications` table.
+One run sends at most one message, which lists what was raised and what was cleared. The text names at most ten alerts on each side and then points at `/api/v1/health`, which lists every active alert. The canary records an announcement only after the webhook answers `2xx`, so a failed delivery is tried again on the next run. The announced alerts live in the `alert_notifications` table.
 
 The canary is a separate invocation so that a tick that crashes or runs out of time cannot take the alert with it. A tick that stops finishing shows up as `prober_stale` on the next canary run.
 
