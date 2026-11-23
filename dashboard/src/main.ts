@@ -55,6 +55,15 @@ import {
 	RETRY_AFTER_DELAY,
 	spreadSeries,
 } from "./series";
+import {
+	effectiveTheme,
+	readStoredTheme,
+	storeTheme,
+	THEME_STORAGE_KEY,
+	type Theme,
+	toggledChoice,
+} from "./theme";
+import { applyTheme, themeStorage } from "./theme-dom";
 
 const SNAPSHOT_URL = "/api/v1/snapshot.json";
 const HISTORY_DAYS = 7;
@@ -1742,6 +1751,37 @@ function scheduleRefresh(): void {
 		else scheduleRefresh();
 	}, Math.max(1, minutes) * 60_000);
 }
+
+const themeButton = byId("theme");
+const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+let themeChoice = readStoredTheme(themeStorage());
+
+function systemTheme(): Theme {
+	return systemDark.matches ? "dark" : "light";
+}
+
+/** Applies the choice and names, on the button, the theme a press would switch to. */
+function showTheme(): void {
+	applyTheme(document.documentElement, themeChoice);
+	const other = effectiveTheme(themeChoice, systemTheme()) === "dark" ? "light" : "dark";
+	const label = `Switch to the ${other} theme`;
+	themeButton.setAttribute("aria-label", label);
+	themeButton.title = label;
+}
+
+themeButton.addEventListener("click", () => {
+	themeChoice = toggledChoice(themeChoice, systemTheme());
+	storeTheme(themeStorage(), themeChoice);
+	showTheme();
+});
+systemDark.addEventListener("change", showTheme);
+// Another tab changed the choice.
+window.addEventListener("storage", (event) => {
+	if (event.key !== null && event.key !== THEME_STORAGE_KEY) return;
+	themeChoice = readStoredTheme(themeStorage());
+	showTheme();
+});
+showTheme();
 
 window.addEventListener("hashchange", onRouteChange);
 window.addEventListener("scroll", hideTip, { passive: true });
