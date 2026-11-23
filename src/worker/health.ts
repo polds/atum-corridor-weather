@@ -15,7 +15,7 @@ export async function readHealth(deps: {
 	const health = buildHealth({
 		network: config.network,
 		nowMs: deps.nowMs,
-		tickIntervalMinutes: config.tickIntervalMinutes,
+		publishIntervalMinutes: config.publishIntervalMinutes,
 		snapshot,
 	});
 	return { snapshot, health };

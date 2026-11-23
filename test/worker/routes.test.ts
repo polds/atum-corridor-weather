@@ -65,6 +65,25 @@ describe("read-only routes", () => {
 		});
 	});
 
+	it("serves a snapshot stored before publishIntervalMinutes existed until the next publish", async () => {
+		await tickAt(0, () => fixtures.quoted);
+		const { publishIntervalMinutes, ...older } = JSON.parse(
+			(await createStore(env.DB).readSnapshotJson("testnet")) ?? "null",
+		);
+		expect(publishIntervalMinutes).toBe(5);
+		await env.DB.prepare("UPDATE snapshots SET snapshot_json = ?1 WHERE network = 'testnet'")
+			.bind(JSON.stringify(older))
+			.run();
+
+		const snapshot = await get("/api/v1/snapshot.json");
+		expect(snapshot.status).toBe(200);
+		expect(await snapshot.json()).toStrictEqual(older);
+		const health = await get("/api/v1/health");
+		expect(health.status).toBe(200);
+		expect(await health.json()).toMatchObject({ status: "ok", alerts: [] });
+		expect((await get("/metrics")).status).toBe(200);
+	});
+
 	it("serves a corridor's history for a number of days", async () => {
 		await tickAt(1, () => fixtures.quoted);
 		await tickAt(0, () => fixtures.declinedInternal);

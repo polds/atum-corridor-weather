@@ -53,7 +53,12 @@ export interface Config {
 	readonly gatewayUrl: string;
 	readonly repositoryUrl: string;
 	readonly probeEnabled: boolean;
+	/** Minutes between ticks, read from the probe cron. The probe cadence. */
 	readonly tickIntervalMinutes: number;
+	/** A tick publishes the snapshot when its slot index is a multiple of this. */
+	readonly publishEveryTicks: number;
+	/** `tickIntervalMinutes * publishEveryTicks`. How often the snapshot and its alerts are rebuilt. */
+	readonly publishIntervalMinutes: number;
 	/** `PROBES_PER_TICK` as configured. A tick runs `probesPlannedPerTick`. */
 	readonly probesPerTick: number;
 	/** Subrequests one invocation may make. 50 on Workers Free, 10,000 on Workers Paid. */
@@ -189,6 +194,7 @@ const envSchema = z
 		PROBE_ENABLED: oneOf(["true", "false"]).transform((value) => value === "true"),
 		PROBES_PER_TICK: integer(1, 200),
 		SUBREQUEST_LIMIT: integer(2, 10_000_000).default("50"),
+		PUBLISH_EVERY_TICKS: integer(1, 60).default("1"),
 		AMOUNT_TIERS: tierAmounts,
 		POLL_INTERVAL_MS: integer(100, 10_000),
 		QUOTE_WINDOW_SECONDS: integer(1, 60),
@@ -275,6 +281,8 @@ export function parseConfig(env: unknown): ConfigResult {
 			repositoryUrl: value.REPOSITORY_URL,
 			probeEnabled: value.PROBE_ENABLED,
 			tickIntervalMinutes: value.tickIntervalMinutes,
+			publishEveryTicks: value.PUBLISH_EVERY_TICKS,
+			publishIntervalMinutes: value.tickIntervalMinutes * value.PUBLISH_EVERY_TICKS,
 			probesPerTick: value.PROBES_PER_TICK,
 			subrequestLimit: value.SUBREQUEST_LIMIT,
 			probesPlannedPerTick: value.probesPlanned,

@@ -23,6 +23,9 @@ afterEach(() => {
 
 const HOOK = "http://127.0.0.1:9999/hook";
 
+/** One target, published on every tick: `scheduledTime` is the wall clock, so any slot must publish. */
+const PUBLISHING = { ...ONE_TARGET, PUBLISH_EVERY_TICKS: "1" };
+
 /** Answers gateway and webhook requests on `fetch`. Returns what was sent. */
 function fakeFetch(refuseAfter = Number.POSITIVE_INFINITY): Request[] {
 	const sent: Request[] = [];
@@ -58,7 +61,7 @@ async function runScheduled(
 describe("scheduled handler", () => {
 	it("runs one tick against the configured gateway and publishes", async () => {
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});
-		const sent = await runScheduled(ONE_TARGET);
+		const sent = await runScheduled(PUBLISHING);
 		expect(sent.map((request) => `${request.method} ${new URL(request.url).host}`)).toStrictEqual([
 			"GET 127.0.0.1:8789",
 			"POST 127.0.0.1:8789",
@@ -81,7 +84,7 @@ describe("scheduled handler", () => {
 		const waitUntil = vi.spyOn(ctx, "waitUntil");
 		await handler.scheduled?.(
 			createScheduledController({ scheduledTime: Date.now(), cron: env.PROBE_CRON }),
-			{ ...env, GATEWAY_URL: "http://127.0.0.1:8789", ...ONE_TARGET },
+			{ ...env, GATEWAY_URL: "http://127.0.0.1:8789", ...PUBLISHING },
 			ctx,
 		);
 		expect(waitUntil).not.toHaveBeenCalled();

@@ -87,7 +87,10 @@ export interface Snapshot {
 	readonly schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
 	readonly network: Network;
 	readonly generatedAt: IsoTimestamp;
+	/** Minutes between ticks: the probe cadence. */
 	readonly tickIntervalMinutes: number;
+	/** Minutes between publishes: how often this document and its alerts are rebuilt. */
+	readonly publishIntervalMinutes: number;
 	/** Probes a tick runs, after the subrequest cap, and the resulting hours for one sweep of every target. */
 	readonly cadence: { readonly probesPerTick: number; readonly sweepHours: number };
 	/** The configured amount tiers, in small, typical, large order. Readings cover these only. */

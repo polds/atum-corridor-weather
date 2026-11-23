@@ -5,6 +5,7 @@ import type { RawExchange } from "../../src/domain/types";
 import { createGatewayClient } from "../../src/gateway/client";
 import { createStore } from "../../src/store/store";
 import type { Config } from "../../src/worker/config";
+import { readHealth } from "../../src/worker/health";
 import { runTick, type TickDeps } from "../../src/worker/tick";
 import { clearTables } from "../support/db";
 import {
@@ -650,7 +651,7 @@ describe("the subrequest budget", () => {
 
 	it("plans 6 probes on the free-plan default and keeps the reserve out of 50 requests", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		// The committed wrangler.jsonc: SUBREQUEST_LIMIT 50, a 3 s window polled every 500 ms, 30 probes.
+		// SUBREQUEST_LIMIT 50, a 3 s window polled every 500 ms, and the 30 probes testConfig pins.
 		const config = testConfig();
 		expect(config).toMatchObject({
 			subrequestLimit: 50,
@@ -871,5 +872,71 @@ describe("the corridor list", () => {
 		const settled = await tickAt(2);
 		expect(settled.written).toBeLessThan(converging.written / 10);
 		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:40:00.000Z", n: 552 }]);
+	});
+});
+
+describe("publishing on every PUBLISH_EVERY_TICKS-th tick", () => {
+	// Ticks of 2 minutes, a publish every 5 ticks: slots that start at :00, :10, :20 and so on.
+	const config = testConfig({
+		PROBE_CRON: "*/2 * * * *",
+		CANARY_CRON: "2,12,22,32,42,52 * * * *",
+		PUBLISH_EVERY_TICKS: "5",
+		PROBES_PER_TICK: "2",
+		AMOUNT_TIERS: '{"small":"1"}',
+	});
+	const PUBLISH_SLOT = Date.parse("2026-11-22T10:50:00.000Z");
+	const TICK_MS = 2 * 60_000;
+
+	async function tickAt(scheduledMs: number) {
+		const run = tickHarness({ startMs: scheduledMs + 1000, config, scenario: quotedEverywhere });
+		return { tick: await runTick(run.deps, scheduledMs), store: run.store };
+	}
+
+	it("stores the probes of the ticks between publishes and publishes them all on the next publish slot", async () => {
+		const store = createStore(env.DB);
+		for (let before = 4; before >= 1; before -= 1) {
+			const { tick } = await tickAt(PUBLISH_SLOT - before * TICK_MS);
+			expect(tick.probes).toHaveLength(2);
+		}
+		expect(await count("ticks")).toBe(4);
+		expect(await count("probes")).toBe(8);
+		expect(await store.readSnapshotJson("testnet")).toBeNull();
+
+		const { tick } = await tickAt(PUBLISH_SLOT);
+		const snapshot = await store.readSnapshot("testnet");
+		expect(Date.parse(snapshot?.generatedAt ?? "")).toBeGreaterThanOrEqual(
+			Date.parse(tick.finishedAt),
+		);
+		expect(snapshot?.lastTick?.slotStart).toBe("2026-11-22T10:50:00.000Z");
+		expect(snapshot).toMatchObject({ tickIntervalMinutes: 2, publishIntervalMinutes: 10 });
+		expect(snapshot?.corridors.filter((corridor) => corridor.condition === "fair")).toHaveLength(
+			10,
+		);
+	});
+
+	it("leaves the stored snapshot untouched on a tick that is not on a publish slot", async () => {
+		await tickAt(PUBLISH_SLOT);
+		const store = createStore(env.DB);
+		const published = await store.readSnapshotJson("testnet");
+		expect(published).not.toBeNull();
+
+		const { tick } = await tickAt(PUBLISH_SLOT + TICK_MS);
+		expect(tick.probes).toHaveLength(2);
+		expect(await count("probes")).toBe(4);
+		expect(await store.readSnapshotJson("testnet")).toBe(published);
+	});
+
+	it("raises prober_stale after three publish intervals, not three tick intervals", async () => {
+		const { tick, store } = await tickAt(PUBLISH_SLOT);
+		const finishedMs = Date.parse(tick.finishedAt);
+		const staleKinds = async (afterMs: number) =>
+			(await readHealth({ config, store, nowMs: finishedMs + afterMs })).health.alerts
+				.map((alert) => alert.kind)
+				.filter((kind) => kind === "prober_stale");
+
+		// Seven minutes is past three 2-minute ticks, and normal between 10-minute publishes.
+		expect(await staleKinds(7 * 60_000)).toStrictEqual([]);
+		expect(await staleKinds(30 * 60_000)).toStrictEqual([]);
+		expect(await staleKinds(30 * 60_000 + 1)).toStrictEqual(["prober_stale"]);
 	});
 });

@@ -196,44 +196,55 @@ const alertSchema: z.ZodType<Alert, z.ZodTypeDef, unknown> = z.object({
 	since: iso,
 });
 
-export const snapshotSchema: z.ZodType<Snapshot, z.ZodTypeDef, unknown> = z.object({
-	schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION),
-	network: z.enum(["testnet", "mainnet"]),
-	generatedAt: iso,
-	tickIntervalMinutes: z.number(),
-	cadence: z.object({ probesPerTick: z.number(), sweepHours: z.number() }),
-	tiers: z.array(tier),
-	lastTick: z
-		.object({
-			slotStart: iso,
-			finishedAt: iso,
-			planned: z.number(),
-			completed: z.number(),
-			gatewayErrors: z.number(),
-			aborted: z.string().nullable(),
-		})
-		.nullable(),
-	assets: z.array(
-		z.object({
-			id: assetId,
-			chainId,
-			chainLabel: z.string(),
-			symbol: z.string(),
-			decimals: z.number(),
-		}),
-	),
-	corridors: z.array(
-		z.object({
-			id: corridorId,
-			source: assetId,
-			destination: assetId,
-			condition: z.enum(["fair", "cloudy", "stormy", "unknown"]),
-			lastProbedAt: iso.nullable(),
-			tiers: z.array(readingSchema),
-		}),
-	),
-	alerts: z.array(alertSchema),
-});
+/**
+ * A snapshot stored before `publishIntervalMinutes` existed was published on
+ * every tick, so a missing value is the tick interval. Such a row lasts until the
+ * first publish after a deploy.
+ */
+export const snapshotSchema: z.ZodType<Snapshot, z.ZodTypeDef, unknown> = z
+	.object({
+		schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION),
+		network: z.enum(["testnet", "mainnet"]),
+		generatedAt: iso,
+		tickIntervalMinutes: z.number(),
+		publishIntervalMinutes: z.number().optional(),
+		cadence: z.object({ probesPerTick: z.number(), sweepHours: z.number() }),
+		tiers: z.array(tier),
+		lastTick: z
+			.object({
+				slotStart: iso,
+				finishedAt: iso,
+				planned: z.number(),
+				completed: z.number(),
+				gatewayErrors: z.number(),
+				aborted: z.string().nullable(),
+			})
+			.nullable(),
+		assets: z.array(
+			z.object({
+				id: assetId,
+				chainId,
+				chainLabel: z.string(),
+				symbol: z.string(),
+				decimals: z.number(),
+			}),
+		),
+		corridors: z.array(
+			z.object({
+				id: corridorId,
+				source: assetId,
+				destination: assetId,
+				condition: z.enum(["fair", "cloudy", "stormy", "unknown"]),
+				lastProbedAt: iso.nullable(),
+				tiers: z.array(readingSchema),
+			}),
+		),
+		alerts: z.array(alertSchema),
+	})
+	.transform((snapshot) => ({
+		...snapshot,
+		publishIntervalMinutes: snapshot.publishIntervalMinutes ?? snapshot.tickIntervalMinutes,
+	}));
 
 export const snapshotRowSchema = z.object({ snapshot_json: jsonText(snapshotSchema) });
 

@@ -537,7 +537,7 @@ export function buildSnapshot(nowMs: number, mode: FixtureMode = "normal"): Snap
 			kind: "prober_stale",
 			severity: "critical",
 			corridorId: null,
-			message: "No tick has finished in the last three intervals.",
+			message: "No tick has finished in the last three publish intervals.",
 			since: iso(generatedAt),
 		});
 	}
@@ -548,6 +548,7 @@ export function buildSnapshot(nowMs: number, mode: FixtureMode = "normal"): Snap
 		network: "testnet",
 		generatedAt: iso(generatedAt),
 		tickIntervalMinutes: TICK_MINUTES,
+		publishIntervalMinutes: TICK_MINUTES,
 		cadence: {
 			probesPerTick: PROBES_PER_TICK,
 			sweepHours:

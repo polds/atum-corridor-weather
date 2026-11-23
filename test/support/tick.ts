@@ -16,13 +16,16 @@ import { fixtures } from "./fixtures";
 /**
  * The deployed configuration with test overrides. The cadence is pinned,
  * because the tests place ticks on five-minute slots and the deployed cadence
- * is free to change.
+ * is free to change: 30 probes a tick, before the subrequest cap, and a
+ * publish on every tick.
  */
 export function testConfig(overrides: Readonly<Record<string, string>> = {}): Config {
 	const parsed = parseConfig({
 		...env,
 		PROBE_CRON: "*/5 * * * *",
 		CANARY_CRON: "2-59/5 * * * *",
+		PROBES_PER_TICK: "30",
+		PUBLISH_EVERY_TICKS: "1",
 		...overrides,
 	});
 	if (!parsed.ok) throw new Error(parsed.errors.join("; "));

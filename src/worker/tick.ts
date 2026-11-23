@@ -172,6 +172,7 @@ export async function publishSnapshot(
 		network: config.network,
 		nowMs: deps.now(),
 		tickIntervalMinutes: config.tickIntervalMinutes,
+		publishIntervalMinutes: config.publishIntervalMinutes,
 		probesPerTick: config.probesPlannedPerTick,
 		slowQuoteMs: config.slowQuoteMs,
 		tierAmounts: config.tierAmounts,
@@ -183,8 +184,10 @@ export async function publishSnapshot(
 
 /**
  * One scheduled run: discover corridors, probe this slot's batch one target at
- * a time, store everything, then publish the snapshot. A failed discovery is
- * stored as an aborted tick and the snapshot is still rebuilt.
+ * a time and store everything. A tick whose slot index is a multiple of
+ * `publishEveryTicks` then rebuilds the snapshot, so the publish rate needs no
+ * stored state. A failed discovery is stored as an aborted tick, and a publish
+ * slot still rebuilds the snapshot.
  */
 export async function runTick(deps: TickDeps, scheduledTimeMs: number): Promise<TickRecord> {
 	const { config } = deps;
@@ -201,6 +204,6 @@ export async function runTick(deps: TickDeps, scheduledTimeMs: number): Promise<
 		dropRawBefore:
 			config.rawRetentionDays === 0 ? null : isoAt(finishedMs - config.rawRetentionDays * DAY_MS),
 	});
-	await publishSnapshot(deps);
+	if (slot.index % config.publishEveryTicks === 0) await publishSnapshot(deps);
 	return tick;
 }

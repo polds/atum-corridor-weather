@@ -38,6 +38,7 @@ describe("parseConfig", () => {
 			ALERT_MIN_SEVERITY: "critical",
 			PUBLIC_URL: "",
 			SUBREQUEST_LIMIT: "100",
+			PUBLISH_EVERY_TICKS: "4",
 		});
 		if (!result.ok) throw new Error(result.errors.join("; "));
 		expect(result.config).toStrictEqual({
@@ -46,6 +47,8 @@ describe("parseConfig", () => {
 			repositoryUrl: "https://github.com/someone/corridor-weather",
 			probeEnabled: true,
 			tickIntervalMinutes: 15,
+			publishEveryTicks: 4,
+			publishIntervalMinutes: 60,
 			probesPerTick: 12,
 			subrequestLimit: 100,
 			probesPlannedPerTick: 12,
@@ -207,6 +210,37 @@ describe("parseConfig", () => {
 			expect(parse({ SUBREQUEST_LIMIT: bad }), bad).toMatchObject({
 				ok: false,
 				errors: [expect.stringMatching(/^SUBREQUEST_LIMIT: /)],
+			});
+		}
+	});
+
+	it("publishes every PUBLISH_EVERY_TICKS ticks, 1 to 60, and every tick when unset", () => {
+		expect(parse({ PROBE_CRON: "*/2 * * * *", PUBLISH_EVERY_TICKS: undefined })).toMatchObject({
+			ok: true,
+			config: { tickIntervalMinutes: 2, publishEveryTicks: 1, publishIntervalMinutes: 2 },
+		});
+		for (const [cron, every, tick, publish] of [
+			["*/2 * * * *", "5", 2, 10],
+			["*/5 * * * *", "1", 5, 5],
+			["*/1 * * * *", "60", 1, 60],
+			["0 * * * *", "3", 60, 180],
+		] as const) {
+			expect(
+				parse({ PROBE_CRON: cron, PUBLISH_EVERY_TICKS: every }),
+				`${cron} ${every}`,
+			).toMatchObject({
+				ok: true,
+				config: {
+					tickIntervalMinutes: tick,
+					publishEveryTicks: Number(every),
+					publishIntervalMinutes: publish,
+				},
+			});
+		}
+		for (const bad of ["0", "61", "2.5", "-1", "five", ""]) {
+			expect(parse({ PUBLISH_EVERY_TICKS: bad }), bad).toMatchObject({
+				ok: false,
+				errors: [expect.stringMatching(/^PUBLISH_EVERY_TICKS: /)],
 			});
 		}
 	});

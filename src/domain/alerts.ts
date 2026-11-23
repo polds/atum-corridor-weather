@@ -21,7 +21,7 @@ export const QUOTES_LOST_WINDOW_DAYS = 7;
 
 export interface AlertInput {
 	readonly nowMs: number;
-	readonly tickIntervalMinutes: number;
+	readonly publishIntervalMinutes: number;
 	readonly slowQuoteMs: number;
 	readonly lastTick: SnapshotTick | null;
 	/**
@@ -41,14 +41,18 @@ const KIND_ORDER: readonly AlertKind[] = [
 	"slow_quotes",
 ];
 
-/** `prober_stale`: no tick finished within three intervals of `nowMs`. */
+/**
+ * `prober_stale`: no tick in the snapshot finished within three publish intervals
+ * of `nowMs`. The snapshot is rebuilt once per publish interval, so its newest
+ * tick is normally up to one publish interval old.
+ */
 export function staleAlert(params: {
 	readonly nowMs: number;
-	readonly tickIntervalMinutes: number;
+	readonly publishIntervalMinutes: number;
 	readonly lastTickFinishedAt: IsoTimestamp | null;
 }): Alert | null {
-	const { nowMs, tickIntervalMinutes, lastTickFinishedAt } = params;
-	const limitMs = 3 * tickIntervalMinutes * 60_000;
+	const { nowMs, publishIntervalMinutes, lastTickFinishedAt } = params;
+	const limitMs = 3 * publishIntervalMinutes * 60_000;
 	if (lastTickFinishedAt === null) {
 		return {
 			kind: "prober_stale",
@@ -63,7 +67,7 @@ export function staleAlert(params: {
 		kind: "prober_stale",
 		severity: "critical",
 		corridorId: null,
-		message: `No tick has finished since ${lastTickFinishedAt}, more than three intervals ago.`,
+		message: `No tick has finished since ${lastTickFinishedAt}, more than three publish intervals ago.`,
 		since: lastTickFinishedAt,
 	};
 }
@@ -136,7 +140,7 @@ function slowQuoteAlert({ corridorId, latest }: TierLatest, slowQuoteMs: number)
 export function alertsFor(input: AlertInput): Alert[] {
 	const stale = staleAlert({
 		nowMs: input.nowMs,
-		tickIntervalMinutes: input.tickIntervalMinutes,
+		publishIntervalMinutes: input.publishIntervalMinutes,
 		lastTickFinishedAt: input.lastTick?.finishedAt ?? null,
 	});
 	const errors = gatewayErrorsAlert(input.lastTick, input.errorRunStart);
