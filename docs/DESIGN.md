@@ -12,7 +12,7 @@ A Cloudflare Worker runs on a cron schedule. Each run is a tick. A tick does fiv
 
 1. It reads `GET /v1/defaults` and builds the corridor list from the chains and tokens the gateway returns.
 2. It picks the next batch of probe targets. A probe target is one corridor at one amount tier.
-3. It opens one quote request per target and polls the status endpoint until the quote window closes.
+3. It opens one quote request per target and polls the status endpoint until just after the quote deadline.
 4. It stores every probe, with its raw HTTP exchanges, in D1.
 5. It rebuilds the public snapshot and the alert list from the store.
 
@@ -86,7 +86,7 @@ The brief's rule is met in its purpose, which is a correct `quote_selector`, and
 
 ### Scheduling is stateless and idempotent
 
-The target list is every corridor at every tier, sorted by id. Slot `n` probes `PROBES_PER_TICK` targets starting at offset `n * PROBES_PER_TICK` modulo the list length. The slot index is `floor(now / interval)`. The interval is read from the probe cron, so the cron and the slot length cannot disagree. No cursor is stored.
+The target list is every corridor at every tier, sorted by id. Slot `n` probes `p` targets starting at offset `n * p` modulo the list length, where `p` is the number of probes the tick plans: `PROBES_PER_TICK`, or fewer under [Platform limits](#platform-limits). The slot index is `floor(now / interval)`. The interval is read from the probe cron, so the cron and the slot length cannot disagree. No cursor is stored.
 
 The `request_id` of a probe is `cw1.{network}.{slotStart}.{corridorHash}.{tier}`. A retried cron run produces the same ids. The gateway then returns the original batch with `idempotent_replay: true` and does not broadcast to operators a second time.
 
@@ -118,15 +118,15 @@ The Worker fits the limits of its plan by construction. It does not find them by
 | D1 rows written per day    | 100,000      | 50 million per month | A tick writes its probes. It rewrites the corridor list only when the list changes                           |
 | Cron Trigger duration      | 15 minutes   | 15 minutes           | `scheduled()` awaits its work. It does not lean on `waitUntil`, which ends 30 seconds after an HTTP response |
 
-**A probe costs a fixed number of requests.** One create, then polls every `POLL_INTERVAL_MS` while the quote window is open, then one poll just after the quote deadline. The Worker knows the deadline, because it set it. With a 3 second window and a 500 ms interval that is 1 create and at most 6 polls: 7 requests, whatever the gateway does. A batch still `collecting` at that last poll is recorded as `incomplete`.
+**A probe costs a fixed number of requests.** One create, then polls every `POLL_INTERVAL_MS` while the quote window is open, then one poll 500 ms after the quote deadline. The Worker knows the deadline, because it set it. With a 3 second window and a 500 ms interval that is 1 create and at most 6 polls: 7 requests, whatever the gateway does. A batch still `collecting` at that last poll is recorded as `incomplete`. The gateway closes a batch by its own clock, and the 500 ms covers the difference between the two clocks. In the three recorded testnet probes the batch was `ready` in a poll answered 213 to 246 ms after the deadline.
 
-**A tick plans within its budget.** One request reads `/v1/defaults`. The rest of `SUBREQUEST_LIMIT` is divided by the cost of a probe, and the tick probes that many targets or `PROBES_PER_TICK`, whichever is smaller. `SUBREQUEST_LIMIT` defaults to 50, the lowest limit of any plan, so the default configuration runs anywhere: 7 probes per tick. The rotation uses the planned number, so no target is skipped. When the budget is the smaller number, the tick logs `probes_capped`, and the snapshot reports the probes per tick it really runs.
+**A tick plans within its budget.** One request reads `/v1/defaults`, and 6 stay unused. The rest of `SUBREQUEST_LIMIT` is divided by the cost of a probe, and the tick probes that many targets or `PROBES_PER_TICK`, whichever is smaller. `SUBREQUEST_LIMIT` defaults to 50, the lowest limit of any plan, so the default configuration runs anywhere: 6 probes per tick, at most 43 requests. The 6 unused requests are a reserve. The plan counts the calls the Worker makes to the gateway, and nothing here has proved that Cloudflare counts only those, so a tick does not plan to end on the last request the limit allows. The rotation uses the planned number, so no target is skipped. When the budget is the smaller number, the tick logs `probes_capped`, and the snapshot reports the probes per tick it really runs.
 
 **The corridor list is written when it changes.** The store keeps a hash of the discovered list. A tick whose list has the same hash writes no corridor row. Writing all 552 rows and their index on every tick was about 1,100 rows per tick, which alone passes the free daily limit at one tick every 10 minutes.
 
-**A platform refusal is not a gateway error.** If `fetch` still reports that the subrequest limit was passed, the tick stops as `subrequest_limit` and stores nothing for the probe that hit it.
+**A platform refusal is not a gateway error.** If `fetch` still reports that the subrequest limit was passed, the tick stops as `subrequest_limit`, stores nothing for the probe that hit it, and logs the tick as an error. The Worker recognizes the refusal by the word `subrequest` in the error text. Cloudflare's exact text is not confirmed, because the limit cannot be reproduced locally. If the text differs, the refused probes are stored as `gateway_error` with a null HTTP status, as before this change.
 
-To probe faster on the free plan, run ticks more often, not larger. The D1 read limit, 5 million rows a day, is the next bound: one tick reads a few thousand rows to rebuild the snapshot, so one tick every 5 minutes is comfortable and one every minute is not. On the paid plan, set `SUBREQUEST_LIMIT` to the plan's limit and choose any `PROBES_PER_TICK`.
+To probe faster on the free plan, run ticks more often, not larger. The D1 read limit, 5 million rows a day, is the next bound. The rows a tick reads to rebuild the snapshot are not measured yet, so check the D1 metrics in the Cloudflare dashboard after you shorten the cron. On the paid plan, set `SUBREQUEST_LIMIT` to `10000` and choose any `PROBES_PER_TICK`.
 
 `/api/v1/health` returns `503` with `prober_stale` from a fresh deploy until the first tick finishes. Expect one red check after the first deploy.
 
@@ -136,9 +136,9 @@ Answers marked "measured" come from three tagged testnet quote requests sent on 
 
 ### 1. What probe rate is acceptable, and is there a rate limit?
 
-Measured. Every gateway response carries `x-ratelimit-limit: 30`. The remaining count recovered within two seconds, so the limit is close to 30 requests per second per caller. One probe costs one `POST` and about seven `GET` calls over three seconds. The gateway limit does not constrain a polite prober.
+Measured. Every gateway response carries `x-ratelimit-limit: 30`. The remaining count recovered within two seconds, so the limit is close to 30 requests per second per caller. One probe costs one `POST` and at most six `GET` calls over three and a half seconds. The gateway limit does not constrain a polite prober.
 
-Needs a person. The limit that matters is the work each broadcast gives to settler operators, and nobody has agreed a number. The cadence is `PROBES_PER_TICK` sequential probes on each run of the probe cron, and `wrangler.jsonc` holds both. The repository owner sets it, and the dashboard shows the current value. As a guide, 30 probes every 10 minutes is 180 broadcasts per hour. Testnet has 552 corridors and 3 tiers, which is 1,656 targets, so at that rate one full sweep takes about 9.2 hours. `PROBES_PER_TICK`, the cron schedule and `CORRIDOR_FILTER` change the rate. `PROBE_ENABLED=false` stops it.
+Needs a person. The limit that matters is the work each broadcast gives to settler operators, and nobody has agreed a number. The cadence is `PROBES_PER_TICK` sequential probes on each run of the probe cron, and `wrangler.jsonc` holds both. The repository owner sets it, and the dashboard shows the current value. Testnet has 552 corridors and 3 tiers, which is 1,656 targets. As a guide, the committed configuration on the Workers Free plan runs 6 probes every 10 minutes: 36 broadcasts per hour, and one full sweep in 46 hours. With `SUBREQUEST_LIMIT` at the Workers Paid limit it runs all 30: 180 broadcasts per hour, and one sweep in about 9.2 hours. `PROBES_PER_TICK`, the cron schedule and `CORRIDOR_FILTER` change the rate. `PROBE_ENABLED=false` stops it.
 
 **Decision needed before deploy.** Confirm the rate in `wrangler.jsonc` with whoever runs the settlers, or give a number.
 

@@ -12,7 +12,7 @@ export WORKER_URL="https://corridor-weather.<your-subdomain>.workers.dev"
 
 ## First deploy
 
-Do not deploy before DESIGN.md question 1 has an answer. Each tick broadcasts `PROBES_PER_TICK` quote requests to the settler operators.
+Do not deploy before DESIGN.md question 1 has an answer. Each tick broadcasts up to `PROBES_PER_TICK` quote requests to the settler operators.
 
 1. Log in to Cloudflare.
 
@@ -88,12 +88,20 @@ A deploy from your own machine uses `D1_DATABASE_ID="<the database_id>" pnpm run
 
 `wrangler deploy` replaces every variable set in the Cloudflare dashboard with the values in `wrangler.jsonc`. Change the rate in `wrangler.jsonc`, or the next deploy undoes your change.
 
-The broadcasts per hour are `PROBES_PER_TICK` times the number of ticks per hour.
+The broadcasts per hour are the probes a tick runs times the number of ticks per hour. A tick runs `PROBES_PER_TICK` probes, or as many as `SUBREQUEST_LIMIT` covers when that is fewer. The dashboard and `cadence.probesPerTick` in the snapshot show the number it runs.
+
+| Plan         | `SUBREQUEST_LIMIT` | Probes a tick runs with the committed timing |
+| ------------ | ------------------ | -------------------------------------------- |
+| Workers Free | `50`               | 6                                            |
+| Workers Paid | `10000`            | `PROBES_PER_TICK`                            |
+
+On Workers Free, raising `PROBES_PER_TICK` above 6 changes nothing. To probe faster there, run ticks more often. A tick that runs fewer probes than `PROBES_PER_TICK` logs `probes_capped`.
 
 1. Edit the `vars` block in `wrangler.jsonc`.
    - To send fewer probes per tick, lower `PROBES_PER_TICK`.
+   - On Workers Paid, set `SUBREQUEST_LIMIT` to `10000`. Leave it at `50` on Workers Free. A value above your plan's limit brings the failed ticks back: see [A tick stops as `subrequest_limit`](#a-tick-stops-as-subrequest_limit).
    - To change how often ticks run, change the probe cron in two places, `triggers.crons` and `PROBE_CRON`. The two strings must be the same, character for character. The tick interval is read from `PROBE_CRON`, so it must fire at one fixed interval, such as `*/10 * * * *`, `0 * * * *` or `0 */6 * * *`.
-   - Move the canary cron the same way, in `triggers.crons` and `CANARY_CRON`, so that it runs a few minutes after each tick. A 30-probe tick takes about two minutes, so leave more than that.
+   - Move the canary cron the same way, in `triggers.crons` and `CANARY_CRON`, so that it runs a few minutes after each tick. A probe takes about 3.5 seconds, so a 6-probe tick takes under half a minute and a 30-probe tick about two minutes. Leave more than that.
    - Change nothing else. No other setting and no test names the cadence. A test fails if a cron string and its variable disagree.
 2. Open a pull request with the change.
 3. Merge it. The **Deploy** workflow deploys it after CI passes.
@@ -303,6 +311,17 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
     gh workflow run deploy.yml --ref main
     ```
 
+## A tick stops as `subrequest_limit`
+
+Cloudflare refused a request because the invocation had made as many as the plan allows. The tick logs at error level with `aborted: "subrequest_limit"`, and `lastTick.aborted` in the snapshot says the same. The probe that was refused is not stored, so the store holds no false `gateway_error`. No alert fires for it.
+
+A tick plans its probes to fit `SUBREQUEST_LIMIT`, so this means the variable is above the limit of the plan the Worker runs on.
+
+1. Check the plan of the Cloudflare account. Workers Free allows 50 subrequests for each invocation. Workers Paid allows 10,000.
+2. Set `SUBREQUEST_LIMIT` in `wrangler.jsonc` to that number and deploy.
+
+If `SUBREQUEST_LIMIT` already matches the plan, Cloudflare counts a request that the plan does not. Lower `SUBREQUEST_LIMIT` by 10 to stop the failures, and open an issue with the tick log.
+
 ## What each alert means
 
 | Alert            | Severity | Fires when                                                                                                | Check first                                                                                                                                                                             |
@@ -321,7 +340,7 @@ curl -s "$WORKER_URL/api/v1/corridors/$id/history.json" | jq '.points[-5:]'
 
 ## Read raw probe data from D1
 
-The tables are `ticks`, `corridors`, `probes`, `probe_declines`, `probe_raw`, `snapshots`, and `alert_notifications`. `alert_notifications` holds the alerts the canary has announced and not yet cleared. `probe_raw` keeps the HTTP exchanges of each probe. Each response body is the text the gateway sent, so read it with `json_extract` after parsing the string. Response bodies are cut when one probe passes 900 KiB. `snapshots` holds the snapshot in parts. Concatenate `snapshot_json` in `part` order. Read the columns from the database itself, because migrations can change them.
+The tables are `ticks`, `corridors`, `corridor_sets`, `probes`, `probe_declines`, `probe_raw`, `snapshots`, and `alert_notifications`. `corridor_sets` holds the hash of the current corridor list. `corridors.last_seen` is the slot in which the current list was last written, not the last tick. `alert_notifications` holds the alerts the canary has announced and not yet cleared. `probe_raw` keeps the HTTP exchanges of each probe. Each response body is the text the gateway sent, so read it with `json_extract` after parsing the string. Response bodies are cut when one probe passes 900 KiB. `snapshots` holds the snapshot in parts. Concatenate `snapshot_json` in `part` order. Read the columns from the database itself, because migrations can change them.
 
 1. Print the schema of every table.
 
