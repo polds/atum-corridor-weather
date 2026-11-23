@@ -8,6 +8,7 @@ Read `docs/DESIGN.md` before you change behavior. It holds the design, the safet
 
 - Never send `sender_auth`. Never call an award or payment endpoint. Never add a key or a secret that can spend.
 - The gateway client allows three routes. Do not add a fourth without changing `docs/DESIGN.md` first.
+- The Worker has two outbound destinations: the gateway, and the alert webhook in `src/notify/`. Do not add a third without changing `docs/DESIGN.md` first.
 - Do not import `@atumlabs/payment-gateway-client` under `src/`. The Worker builds quote request bodies itself in `src/gateway/quote-request.ts`. The SDK (6.0.0 or later) is a dev dependency, and the conformance test requires the two bodies to be equal. Change the builder and that test together.
 - Testnet only. `NETWORK=mainnet` needs `MAINNET_ACK` and a human decision (DESIGN.md, questions 1 and 4).
 - Do not send quote requests to the real gateway from tests or CI. Tests use the fixtures in `test/fixtures/gateway`.
