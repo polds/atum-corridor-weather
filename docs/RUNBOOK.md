@@ -91,7 +91,7 @@ The broadcasts per hour are `PROBES_PER_TICK * 60 / TICK_INTERVAL_MINUTES`.
 
 1. Edit the `vars` block in `wrangler.jsonc`.
    - To send fewer probes per tick, lower `PROBES_PER_TICK`.
-   - To run ticks less often, change the probe cron, which is the first entry in `triggers.crons`, and set `TICK_INTERVAL_MINUTES` to the same interval. For example, use `*/10 * * * *` with `"10"`. Leave the second entry alone: it is the canary cron.
+   - To run ticks less often, change the probe cron in two places, `triggers.crons` and `PROBE_CRON`, and set `TICK_INTERVAL_MINUTES` to the same interval. For example, use `*/10 * * * *` with `"10"`. The two cron strings must be the same, character for character. Leave the canary cron alone.
 2. Open a pull request with the change.
 3. Merge it. The **Deploy** workflow deploys it after CI passes.
 
@@ -239,7 +239,7 @@ Know these limits before you rely on it.
 - The canary runs inside the Worker. If Cloudflare stops invoking the Worker, no message is sent. Only an outside check on `/api/v1/health` catches that.
 - A fresh deploy has no finished tick. The first canary run can announce `prober_stale`, and the next can clear it.
 - Each run sends at most one message. An alert that stays active is announced once.
-- A change to the canary's schedule needs two edits in `wrangler.jsonc`: the second entry in `triggers.crons`, and `CANARY_CRON`. They must be the same string.
+- A change to the canary's schedule needs two edits in `wrangler.jsonc`: its entry in `triggers.crons`, and `CANARY_CRON`. They must be the same string. A trigger that matches neither `PROBE_CRON` nor `CANARY_CRON` does nothing, and the Worker logs `unknown_cron`.
 
 To stop the messages, delete the secret.
 
@@ -274,10 +274,10 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
 
    If a tier is not `quoted`, the corridor does not quote today. Pick a corridor in the `fair` condition, change the filter to it, and repeat from step 2.
 
-4. In `wrangler.jsonc`, raise the large tier above testnet liquidity.
+4. In `wrangler.jsonc`, probe one tier only, at an amount above testnet liquidity. The alert needs every configured tier of the corridor to lose its quote, so a single tier makes the drill short.
 
    ```jsonc
-   "AMOUNT_TIERS": "{\"small\":\"1\",\"typical\":\"25\",\"large\":\"10000\"}"
+   "AMOUNT_TIERS": "{\"large\":\"10000\"}"
    ```
 
 5. Deploy from your machine again, as in step 2.
@@ -291,7 +291,7 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
 
 7. Check that your monitor fired once.
 
-8. Restore `AMOUNT_TIERS` to `{"small":"1","typical":"25","large":"100"}` and keep the filter. Deploy from your machine. The alert compares the latest probe of a tier with the probe before it, so the large tier must be quoted again before health returns `200`. Without the filter, that corridor waits for its turn in the full sweep, about 4.6 hours.
+8. Restore `AMOUNT_TIERS` to `{"small":"1","typical":"25","large":"100"}` and keep the filter. Deploy from your machine. The alert stays active until a tier of the corridor is quoted again, so health returns `200` only after the next tick quotes one. Without the filter, that corridor waits for its turn in the full sweep, about 4.6 hours.
 
 9. Wait until health returns `200`. Check that the monitor recovered.
 
@@ -304,12 +304,12 @@ The drill uses the corridor from Arbitrum Sepolia USDC to Base Sepolia USDC. On 
 
 ## What each alert means
 
-| Alert            | Severity | Fires when                                                                                              | Check first                                                                                                                                                                             |
-| ---------------- | -------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prober_stale`   | Critical | No tick finished within three intervals                                                                 | Run `pnpm exec wrangler tail corridor-weather` through one tick and look for an exception. Run `pnpm exec wrangler deployments list` to see whether a recent deploy changed the Worker. |
-| `gateway_errors` | Critical | Discovery failed or listed no usable chain, or half or more of the probes in a tick were gateway errors | Read `lastTick` in `/api/v1/snapshot.json`. `aborted` names the reason when a tick stopped early, and `gatewayErrors` counts the failed probes.                                         |
-| `quotes_lost`    | Critical | A corridor tier was quoted on its previous probe and is not quoted now                                  | Read the corridor history. Its outcome and decline reasons, for example `INSUFFICIENT_LIQUIDITY`, say what the operators answered.                                                      |
-| `slow_quotes`    | Warning  | The time to the first quote is above `SLOW_QUOTE_MS`                                                    | Compare `firstQuoteMs` across corridors in `/api/v1/snapshot.json` to see whether one corridor or all of them are slow.                                                                 |
+| Alert            | Severity | Fires when                                                                                                | Check first                                                                                                                                                                             |
+| ---------------- | -------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prober_stale`   | Critical | No tick finished within three intervals                                                                   | Run `pnpm exec wrangler tail corridor-weather` through one tick and look for an exception. Run `pnpm exec wrangler deployments list` to see whether a recent deploy changed the Worker. |
+| `gateway_errors` | Critical | Discovery failed or listed no usable chain, or half or more of the probes in a tick were gateway errors   | Read `lastTick` in `/api/v1/snapshot.json`. `aborted` names the reason when a tick stopped early, and `gatewayErrors` counts the failed probes.                                         |
+| `quotes_lost`    | Critical | A corridor was quoted in the last 7 days, and the latest probe of every configured tier is now not quoted | Read the corridor history. Its outcome and decline reasons, for example `INSUFFICIENT_LIQUIDITY`, say what the operators answered.                                                      |
+| `slow_quotes`    | Warning  | The time to the first quote is above `SLOW_QUOTE_MS`                                                      | Compare `firstQuoteMs` across corridors in `/api/v1/snapshot.json` to see whether one corridor or all of them are slow.                                                                 |
 
 To read the history of a corridor, URL-encode its id.
 

@@ -199,7 +199,7 @@ The Worker has two Cron Triggers, and `scheduled()` tells them apart by `control
 - An alert that is gone from the health report is announced as cleared. Raising `ALERT_MIN_SEVERITY` does not clear an alert that is still active.
 - An alert that is still active is not announced again.
 
-One run sends at most one message, which lists what was raised and what was cleared. The text names at most ten alerts on each side and then points at `/api/v1/health`, which lists every active alert. The canary records an announcement only after the webhook answers `2xx`, so a failed delivery is tried again on the next run. The announced alerts live in the `alert_notifications` table.
+One run sends at most one message, which lists what was raised and what was cleared. The text names at most ten alerts on each side. Past ten raised alerts it points at `/api/v1/health`, which lists every active alert. The canary records an announcement only after the webhook answers `2xx`, so a failed delivery is tried again on the next run. The announced alerts live in the `alert_notifications` table.
 
 The canary is a separate invocation so that a tick that crashes or runs out of time cannot take the alert with it. A tick that stops finishing shows up as `prober_stale` on the next canary run.
 
