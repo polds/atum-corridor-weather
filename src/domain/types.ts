@@ -6,6 +6,8 @@
  * `src/worker/config.ts` (environment).
  */
 
+import type { Sha256Hex } from "./schedule";
+
 declare const brand: unique symbol;
 export type Brand<T, B extends string> = T & { readonly [brand]: B };
 
@@ -175,6 +177,8 @@ export interface TickRecord {
 	readonly finishedAt: IsoTimestamp;
 	/** Corridors discovered from `/v1/defaults` this tick. Empty when discovery failed. */
 	readonly corridors: readonly Corridor[];
+	/** SHA-256 of `corridorListText(corridors)`. Null when discovery failed. */
+	readonly corridorsHash: Sha256Hex | null;
 	readonly planned: number;
 	/** Targets left out because a tier amount has more fractional digits than the destination token. */
 	readonly unrepresentable: number;
@@ -186,4 +190,6 @@ export interface TickRecord {
 export type TickAbort =
 	| { readonly reason: "defaults_unavailable"; readonly message: string }
 	| { readonly reason: "rate_limited"; readonly message: string }
+	/** The Workers platform refused a request for passing the subrequest limit. */
+	| { readonly reason: "subrequest_limit"; readonly message: string }
 	| { readonly reason: "disabled"; readonly message: string };

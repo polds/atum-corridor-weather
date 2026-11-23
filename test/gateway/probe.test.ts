@@ -3,12 +3,19 @@ import { PROBE_IDENTITY } from "../../src/domain/identity";
 import { probeTargets, slotAt } from "../../src/domain/schedule";
 import type { ProbeIdentity } from "../../src/domain/types";
 import { createGatewayClient, type GatewayClient } from "../../src/gateway/client";
-import { isRateLimited, type ProbePlan, runProbe } from "../../src/gateway/probe";
+import {
+	isRateLimited,
+	isSubrequestLimited,
+	type ProbePlan,
+	requestsPerProbe,
+	runProbe,
+} from "../../src/gateway/probe";
 import {
 	FakeClock,
 	type Handler,
 	jsonResponse,
 	replay,
+	SUBREQUEST_REFUSAL,
 	scriptedFetch,
 } from "../support/fake-gateway";
 import {
@@ -31,6 +38,8 @@ function probe(
 		readonly timeoutMs?: number;
 		readonly identity?: ProbeIdentity;
 		readonly wrap?: (client: GatewayClient) => GatewayClient;
+		readonly pollIntervalMs?: number;
+		readonly quoteWindowSeconds?: number;
 	} = {},
 ) {
 	if (target === undefined) throw new Error("no target");
@@ -54,10 +63,10 @@ function probe(
 		gateway: options.wrap?.(client) ?? client,
 		now: clock.now,
 		sleep: clock.sleep,
-		pollIntervalMs: 500,
-		quoteWindowSeconds: 3,
+		pollIntervalMs: options.pollIntervalMs ?? 500,
+		quoteWindowSeconds: options.quoteWindowSeconds ?? 3,
 	});
-	return { run, requests: fake.requests };
+	return { run, requests: fake.requests, clock };
 }
 
 /** The fixture with every poll rewritten by `edit`. */
@@ -99,7 +108,8 @@ describe("runProbe", () => {
 			declines: [],
 			requestedCount: 1,
 		});
-		expect(record.timings).toStrictEqual({ createLatencyMs: 64, firstQuoteMs: 594, readyMs: 3232 });
+		// The recorded batch turned ready at the deadline. The last poll, 500 ms after it, is the first to see that.
+		expect(record.timings).toStrictEqual({ createLatencyMs: 64, firstQuoteMs: 594, readyMs: 3500 });
 		expect(record).toMatchObject({
 			startedAt: "2026-11-22T10:37:05.617Z",
 			quoteRequestId: QR,
@@ -128,8 +138,8 @@ describe("runProbe", () => {
 	});
 
 	it.each([
-		["insufficient liquidity", fixtures.declinedLiquidity, "INSUFFICIENT_LIQUIDITY", 3246],
-		["internal", fixtures.declinedInternal, "INTERNAL", 3213],
+		["insufficient liquidity", fixtures.declinedLiquidity, "INSUFFICIENT_LIQUIDITY", 3500],
+		["internal", fixtures.declinedInternal, "INTERNAL", 3500],
 	] as const)("records a declined probe (%s)", async (_name, fixture, reason, readyMs) => {
 		const record = await probe((clock) => replay(fixture, clock)).run;
 		expect(record.outcome).toStrictEqual({
@@ -167,8 +177,48 @@ describe("runProbe", () => {
 		const record = await run;
 		expect(record.outcome).toStrictEqual({ kind: "incomplete" });
 		expect(record.timings).toStrictEqual({ createLatencyMs: 64, firstQuoteMs: 594, readyMs: null });
-		expect(requests.length).toBeGreaterThan(7);
-		expect(record.raw.at(-1)?.at).toBe("2026-11-22T10:37:11.849Z");
+		expect(requests).toHaveLength(7);
+		// The last poll goes out 500 ms after the quote deadline the probe set, 10:37:08.617Z.
+		expect(record.raw.at(-1)?.at).toBe("2026-11-22T10:37:09.117Z");
+	});
+
+	it.each([
+		[3, 500, 7],
+		[1, 1000, 2],
+		[1, 100, 11],
+		[2, 300, 8],
+		[3, 700, 6],
+		[60, 10_000, 7],
+	] as const)(
+		"makes at most requestsPerProbe requests for a %i s window polled every %i ms",
+		async (quoteWindowSeconds, pollIntervalMs, expected) => {
+			const collecting = { ...(fixtures.quoted.events[1]?.json as object), status: "collecting" };
+			for (const latencyMs of [0, 40, 450]) {
+				const { run, requests } = probe(
+					(clock) => {
+						const created = replay(fixtures.quoted, clock);
+						return (request) => {
+							if (request.method === "POST") return created(request);
+							clock.ms += latencyMs;
+							return jsonResponse(200, collecting);
+						};
+					},
+					{ quoteWindowSeconds, pollIntervalMs },
+				);
+				const record = await run;
+				expect(record.outcome).toStrictEqual({ kind: "incomplete" });
+				if (latencyMs === 0) expect(requests).toHaveLength(expected);
+				expect(requests.length).toBeLessThanOrEqual(expected);
+			}
+			expect(requestsPerProbe({ quoteWindowSeconds, pollIntervalMs })).toBe(expected);
+		},
+	);
+
+	it("stops polling at the first answer that is not collecting", async () => {
+		const ready = fixtures.quoted.events.at(-1)?.json;
+		const { run, requests } = probe(createThen(() => jsonResponse(200, ready)));
+		expect((await run).outcome).toMatchObject({ kind: "quoted" });
+		expect(requests.map((request) => request.method)).toStrictEqual(["POST", "GET"]);
 	});
 
 	it("records a gateway error for a non-JSON 500 on a poll", async () => {
@@ -220,6 +270,28 @@ describe("runProbe", () => {
 		});
 		expect(record.timings.createLatencyMs).toBeNull();
 		expect(isRateLimited(record.outcome)).toBe(false);
+	});
+
+	it("marks a platform refusal of a subrequest so the tick can stop", async () => {
+		const record = await probe(
+			createThen(() => {
+				throw new Error(SUBREQUEST_REFUSAL);
+			}),
+		).run;
+		expect(record.outcome).toStrictEqual({
+			kind: "gateway_error",
+			phase: "poll",
+			httpStatus: null,
+			code: "SUBREQUEST_LIMIT",
+			message: `transport: Error: ${SUBREQUEST_REFUSAL}`,
+		});
+		expect(isSubrequestLimited(record.outcome)).toBe(true);
+		expect(isRateLimited(record.outcome)).toBe(false);
+
+		const refused = await probe(() => () => {
+			throw new TypeError("connection refused");
+		}).run;
+		expect(isSubrequestLimited(refused.outcome)).toBe(false);
 	});
 
 	it("records a gateway error when a poll times out", async () => {

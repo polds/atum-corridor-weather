@@ -19,8 +19,47 @@ import type { StatusResponse } from "./schemas";
 /** The `code` of a probe that hit HTTP 429. The tick stops on it. */
 export const RATE_LIMITED_CODE = "RATE_LIMIT_EXCEEDED";
 
-/** Seconds the probe keeps polling after the quote window closes. */
-const POLL_GRACE_SECONDS = 3;
+/** The `code` of a probe whose request the Workers platform refused. The tick stops on it. */
+export const SUBREQUEST_LIMIT_CODE = "SUBREQUEST_LIMIT";
+
+/**
+ * How long after the quote deadline the last poll goes out. The gateway closes
+ * the batch by its own clock, so the margin has to cover the difference between
+ * the two clocks. It costs time, not requests.
+ */
+export const LAST_POLL_MARGIN_MS = 500;
+
+/**
+ * Polls sent every `pollIntervalMs` while the next one would still fall before
+ * the quote deadline, counted from the create call: `k * pollIntervalMs < window`.
+ */
+function intervalPolls(params: {
+	readonly quoteWindowSeconds: number;
+	readonly pollIntervalMs: number;
+}): number {
+	return Math.ceil((params.quoteWindowSeconds * 1000) / params.pollIntervalMs) - 1;
+}
+
+/**
+ * The most requests one probe sends: the create call, the interval polls and
+ * the last poll after the deadline. `runProbe` never sends more, whatever the
+ * gateway answers and however slowly.
+ */
+export function requestsPerProbe(params: {
+	readonly quoteWindowSeconds: number;
+	readonly pollIntervalMs: number;
+}): number {
+	return 1 + intervalPolls(params) + 1;
+}
+
+/**
+ * Whether a transport failure is the Workers platform refusing the request for
+ * passing the subrequest limit. On a deployed Worker the error read "Too many
+ * subrequests by single Worker invocation." (2026-11-23).
+ */
+function isSubrequestRefusal(failure: GatewayFailure): boolean {
+	return failure.kind === "transport" && /subrequest/i.test(failure.message);
+}
 
 export interface ProbeDeps {
 	readonly gateway: GatewayClient;
@@ -41,6 +80,12 @@ export interface ProbePlan {
 
 export function isRateLimited(outcome: ProbeOutcome): boolean {
 	return outcome.kind === "gateway_error" && outcome.code === RATE_LIMITED_CODE;
+}
+
+export function isSubrequestLimited(
+	outcome: ProbeOutcome,
+): outcome is Extract<ProbeOutcome, { readonly kind: "gateway_error" }> {
+	return outcome.kind === "gateway_error" && outcome.code === SUBREQUEST_LIMIT_CODE;
 }
 
 function gatewayError(phase: ProbePhase, failure: GatewayFailure): ProbeOutcome {
@@ -68,7 +113,7 @@ function gatewayError(phase: ProbePhase, failure: GatewayFailure): ProbeOutcome 
 				kind: "gateway_error",
 				phase,
 				httpStatus: null,
-				code: null,
+				code: isSubrequestRefusal(failure) ? SUBREQUEST_LIMIT_CODE : null,
 				message: `${failure.kind}: ${failure.message}`,
 			};
 		default: {
@@ -118,9 +163,12 @@ function finalStatus(
 }
 
 /**
- * Opens one quote request with `wait=false` and polls it until it leaves
- * `collecting` or the quote window plus a grace period has passed. Every
- * failure becomes a `gateway_error` outcome; this function never throws.
+ * Opens one quote request with `wait=false` and polls it on a fixed schedule:
+ * every `pollIntervalMs` while the next poll would still fall before the quote
+ * deadline the request set, then once `LAST_POLL_MARGIN_MS` after it. It stops
+ * at the first answer that is not `collecting`, and sends at most
+ * `requestsPerProbe` requests. Every failure becomes a `gateway_error`
+ * outcome; this function never throws.
  */
 export async function runProbe(plan: ProbePlan, deps: ProbeDeps): Promise<ProbeRecord> {
 	const startedMs = deps.now();
@@ -176,12 +224,18 @@ export async function runProbe(plan: ProbePlan, deps: ProbeDeps): Promise<ProbeR
 			idempotentReplay: created.value.idempotent_replay,
 		};
 
-		const budgetEndMs = sentMs + (deps.quoteWindowSeconds + POLL_GRACE_SECONDS) * 1000;
+		const deadlineMs = Date.parse(build.body.quote_deadline);
 		const firstSeenMs = new Map<string, number>();
 		let firstQuoteMs: number | null = null;
 		let readyMs: number | null = null;
+		// The counter bounds the requests. The clock can only make the last poll come sooner.
+		let intervalPollsLeft = intervalPolls(deps);
 		for (;;) {
-			await deps.sleep(deps.pollIntervalMs);
+			const last = intervalPollsLeft === 0 || deps.now() + deps.pollIntervalMs >= deadlineMs;
+			intervalPollsLeft -= 1;
+			await deps.sleep(
+				last ? Math.max(0, deadlineMs + LAST_POLL_MARGIN_MS - deps.now()) : deps.pollIntervalMs,
+			);
 			const polled = await deps.gateway.getQuoteRequest(batch.quoteRequestId);
 			raw.push(polled.exchange);
 			const seenMs = deps.now();
@@ -193,7 +247,7 @@ export async function runProbe(plan: ProbePlan, deps: ProbeDeps): Promise<ProbeR
 			}
 			if (firstQuoteMs === null && status.quotes.length > 0) firstQuoteMs = seenMs - sentMs;
 			if (readyMs === null && status.status === "ready") readyMs = seenMs - sentMs;
-			if (status.status !== "collecting" || seenMs >= budgetEndMs) {
+			if (status.status !== "collecting" || last) {
 				// A replayed batch was opened by an earlier run, so this run's clock measured
 				// none of its timings.
 				const replay = batch.idempotentReplay;

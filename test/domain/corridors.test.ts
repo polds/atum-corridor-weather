@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+	corridorListText,
 	type DefaultsListing,
 	discoverCorridors,
 	type ListedChain,
 } from "../../src/domain/corridors";
 import { defaultsListingSchema } from "../../src/gateway/schemas";
-import { fixtures, testnetListing } from "../support/fixtures";
+import { fixtures, testnetCorridors, testnetListing } from "../support/fixtures";
 
 const chain = (overrides: Partial<ListedChain>): ListedChain => ({
 	escrow_contract: "0xescrow",
@@ -110,5 +111,23 @@ describe("discoverCorridors", () => {
 			"eip155:421614/erc20:0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d>eip155:84532/erc20:0x036cbd53842c5426634e7929541ec2318f3dcf7e",
 		]);
 		expect(discoverCorridors(testnetListing, /^tron:shasta\//).corridors).toHaveLength(2 * 23);
+	});
+});
+
+describe("corridorListText", () => {
+	const [first, second, ...rest] = testnetCorridors;
+	if (first === undefined || second === undefined) throw new Error("fixture has no corridors");
+
+	it("does not depend on the order of the list", () => {
+		expect(corridorListText([second, first, ...rest])).toBe(corridorListText(testnetCorridors));
+	});
+
+	it("changes with a corridor, a symbol or a decimals value", () => {
+		const base = corridorListText(testnetCorridors);
+		expect(corridorListText([second, ...rest])).not.toBe(base);
+		const renamed = { ...first, source: { ...first.source, symbol: "USDC.e" } };
+		expect(corridorListText([renamed, second, ...rest])).not.toBe(base);
+		const redecimaled = { ...first, destination: { ...first.destination, decimals: 18 } };
+		expect(corridorListText([redecimaled, second, ...rest])).not.toBe(base);
 	});
 });

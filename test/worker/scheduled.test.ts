@@ -7,11 +7,14 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/worker/index";
 import { clearTables } from "../support/db";
-import { jsonResponse } from "../support/fake-gateway";
+import { jsonResponse, SUBREQUEST_REFUSAL } from "../support/fake-gateway";
 import { fixtures } from "../support/fixtures";
 import { ONE_TARGET } from "../support/tick";
 
 const lastPoll = fixtures.quoted.events.at(-1)?.json;
+
+/** The handler as Cloudflare calls it, with an execution context as the third argument. */
+const handler: ExportedHandler<Env> = worker;
 
 beforeEach(clearTables);
 afterEach(() => {
@@ -20,22 +23,33 @@ afterEach(() => {
 
 const HOOK = "http://127.0.0.1:9999/hook";
 
-async function runScheduled(
-	overrides: Readonly<Record<string, unknown>>,
-	cron = env.PROBE_CRON,
-): Promise<Request[]> {
+/** One target, published on every tick: `scheduledTime` is the wall clock, so any slot must publish. */
+const PUBLISHING = { ...ONE_TARGET, PUBLISH_EVERY_TICKS: "1" };
+
+/** Answers gateway and webhook requests on `fetch`. Returns what was sent. */
+function fakeFetch(refuseAfter = Number.POSITIVE_INFINITY): Request[] {
 	const sent: Request[] = [];
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 		const request = new Request(input, init);
 		sent.push(request);
+		if (sent.length > refuseAfter) throw new Error(SUBREQUEST_REFUSAL);
 		const { pathname } = new URL(request.url);
 		if (pathname === "/hook") return new Response("ok");
 		if (pathname === "/v1/defaults") return jsonResponse(200, fixtures.testnetDefaults);
 		if (request.method === "POST") return jsonResponse(202, fixtures.quoted.events[0]?.json);
 		return jsonResponse(200, lastPoll);
 	});
+	return sent;
+}
+
+async function runScheduled(
+	overrides: Readonly<Record<string, unknown>>,
+	cron = env.PROBE_CRON,
+	refuseAfter = Number.POSITIVE_INFINITY,
+): Promise<Request[]> {
+	const sent = fakeFetch(refuseAfter);
 	const ctx = createExecutionContext();
-	worker.scheduled(
+	await handler.scheduled?.(
 		createScheduledController({ scheduledTime: Date.now(), cron }),
 		{ ...env, GATEWAY_URL: "http://127.0.0.1:8789", ...overrides },
 		ctx,
@@ -47,7 +61,7 @@ async function runScheduled(
 describe("scheduled handler", () => {
 	it("runs one tick against the configured gateway and publishes", async () => {
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});
-		const sent = await runScheduled(ONE_TARGET);
+		const sent = await runScheduled(PUBLISHING);
 		expect(sent.map((request) => `${request.method} ${new URL(request.url).host}`)).toStrictEqual([
 			"GET 127.0.0.1:8789",
 			"POST 127.0.0.1:8789",
@@ -61,6 +75,38 @@ describe("scheduled handler", () => {
 		);
 		const snapshot = await env.DB.prepare("SELECT count(*) AS n FROM snapshots").first("n");
 		expect(snapshot).toBe(1);
+	});
+
+	it("resolves only after the tick's store writes are done, without waitUntil", async () => {
+		vi.spyOn(console, "info").mockImplementation(() => {});
+		fakeFetch();
+		const ctx = createExecutionContext();
+		const waitUntil = vi.spyOn(ctx, "waitUntil");
+		await handler.scheduled?.(
+			createScheduledController({ scheduledTime: Date.now(), cron: env.PROBE_CRON }),
+			{ ...env, GATEWAY_URL: "http://127.0.0.1:8789", ...PUBLISHING },
+			ctx,
+		);
+		expect(waitUntil).not.toHaveBeenCalled();
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM ticks").first("n")).toBe(1);
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM probes").first("n")).toBe(1);
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM snapshots").first("n")).toBe(1);
+	});
+
+	it("logs a tick the platform stopped at the subrequest limit as an error", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const sent = await runScheduled(ONE_TARGET, env.PROBE_CRON, 1);
+		expect(sent).toHaveLength(2);
+		expect(error).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "tick",
+				completed: 0,
+				aborted: expect.objectContaining({ reason: "subrequest_limit" }),
+			}),
+		);
+		expect(info).not.toHaveBeenCalledWith(expect.objectContaining({ event: "tick" }));
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM probes").first("n")).toBe(0);
 	});
 
 	it("sends nothing when the configuration is invalid", async () => {
@@ -86,7 +132,34 @@ describe("scheduled handler", () => {
 		expect(await env.DB.prepare("SELECT count(*) AS n FROM ticks").first("n")).toBe(1);
 	});
 
-	it("does nothing on a cron that matches neither variable, and logs it", async () => {
+	it("runs maintenance, and neither a tick nor the canary, on the maintenance cron", async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		await env.DB.prepare(
+			"INSERT INTO probe_raw (probe_id, created_at, raw_json) VALUES ('cw1.testnet.20260101T0000Z.0.small', '2026-01-01T00:00:00.000Z', '{}')",
+		).run();
+		const sent = await runScheduled(
+			{ ...ONE_TARGET, ALERT_WEBHOOK_URL: HOOK },
+			env.MAINTENANCE_CRON,
+		);
+		expect(sent).toStrictEqual([]);
+		expect(info).toHaveBeenCalledWith(
+			expect.objectContaining({ event: "maintenance", rawDayDeleted: "2026-01-01" }),
+		);
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM probe_raw").first("n")).toBe(0);
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM ticks").first("n")).toBe(0);
+	});
+
+	it("logs a maintenance run that throws instead of rejecting", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const broken = {
+			prepare: () => ({ bind: () => ({}) }),
+			batch: () => Promise.reject(new Error("D1 down")),
+		};
+		await runScheduled({ DB: broken }, env.MAINTENANCE_CRON);
+		expect(error).toHaveBeenCalledWith({ event: "maintenance_failed", error: "Error: D1 down" });
+	});
+
+	it("does nothing on a cron that matches no variable, and logs it", async () => {
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const sent = await runScheduled({ ...ONE_TARGET, ALERT_WEBHOOK_URL: HOOK }, "0 0 * * *");
 		expect(sent).toStrictEqual([]);

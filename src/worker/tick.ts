@@ -1,5 +1,5 @@
 import { isoAt } from "../domain/brands";
-import { discoverCorridors } from "../domain/corridors";
+import { corridorListText, discoverCorridors } from "../domain/corridors";
 import { PROBE_IDENTITY } from "../domain/identity";
 import { buildSnapshot } from "../domain/publish";
 import {
@@ -13,7 +13,7 @@ import {
 import type { Snapshot } from "../domain/snapshot";
 import { AMOUNT_TIERS, type ProbeRecord, type TickRecord, type TickSlot } from "../domain/types";
 import type { GatewayClient, GatewayFailure } from "../gateway/client";
-import { isRateLimited, runProbe } from "../gateway/probe";
+import { isRateLimited, isSubrequestLimited, requestsPerProbe, runProbe } from "../gateway/probe";
 import type { Store } from "../store/store";
 import type { Config } from "./config";
 
@@ -26,9 +26,10 @@ export interface TickDeps {
 	readonly sleep: (ms: number) => Promise<void>;
 }
 
-type TickRun = Pick<TickRecord, "corridors" | "planned" | "unrepresentable" | "probes" | "aborted">;
-
-const DAY_MS = 86_400_000;
+type TickRun = Pick<
+	TickRecord,
+	"corridors" | "corridorsHash" | "planned" | "unrepresentable" | "probes" | "aborted"
+>;
 
 async function sha256Hex(text: string): Promise<Sha256Hex> {
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -55,16 +56,27 @@ async function probeSlot(deps: TickDeps, slot: TickSlot): Promise<TickRun> {
 	if (!config.probeEnabled) {
 		return {
 			corridors: [],
+			corridorsHash: null,
 			planned: 0,
 			unrepresentable: 0,
 			probes: [],
 			aborted: { reason: "disabled", message: "PROBE_ENABLED is false" },
 		};
 	}
+	if (config.probesPlannedPerTick < config.probesPerTick) {
+		console.warn({
+			event: "probes_capped",
+			configured: config.probesPerTick,
+			planned: config.probesPlannedPerTick,
+			subrequestLimit: config.subrequestLimit,
+			requestsPerProbe: requestsPerProbe(config),
+		});
+	}
 	const defaults = await deps.gateway.getDefaults();
 	if (!defaults.ok) {
 		return {
 			corridors: [],
+			corridorsHash: null,
 			planned: 0,
 			unrepresentable: 0,
 			probes: [],
@@ -76,6 +88,7 @@ async function probeSlot(deps: TickDeps, slot: TickSlot): Promise<TickRun> {
 		const chains = Object.keys(defaults.value).length;
 		return {
 			corridors: [],
+			corridorsHash: null,
 			planned: 0,
 			unrepresentable: 0,
 			probes: [],
@@ -86,6 +99,7 @@ async function probeSlot(deps: TickDeps, slot: TickSlot): Promise<TickRun> {
 		};
 	}
 	const { corridors } = discoverCorridors(defaults.value, config.corridorFilter);
+	const corridorsHash = await sha256Hex(corridorListText(corridors));
 	if (corridors.length === 0) {
 		console.warn({
 			event: "corridor_filter_matched_nothing",
@@ -96,7 +110,8 @@ async function probeSlot(deps: TickDeps, slot: TickSlot): Promise<TickRun> {
 	const targets = probeTargets(corridors, config.tierAmounts);
 	const unrepresentable =
 		corridors.length * Object.keys(config.tierAmounts).length - targets.length;
-	const batch = batchFor(slot, targets, config.probesPerTick);
+	const batch = batchFor(slot, targets, config.probesPlannedPerTick);
+	const run = { corridors, corridorsHash, planned: batch.length, unrepresentable };
 	const probes: ProbeRecord[] = [];
 	for (const target of batch) {
 		const corridorDigest = await sha256Hex(target.corridor.id);
@@ -116,12 +131,21 @@ async function probeSlot(deps: TickDeps, slot: TickSlot): Promise<TickRun> {
 				quoteWindowSeconds: config.quoteWindowSeconds,
 			},
 		);
+		// The platform, not the gateway, refused this probe, so it measured nothing.
+		if (isSubrequestLimited(probe.outcome)) {
+			return {
+				...run,
+				probes,
+				aborted: {
+					reason: "subrequest_limit",
+					message: `the platform refused a request of ${probe.id} (${probe.outcome.message}); it and ${batch.length - probes.length - 1} later probes not stored`,
+				},
+			};
+		}
 		probes.push(probe);
 		if (isRateLimited(probe.outcome)) {
 			return {
-				corridors,
-				planned: batch.length,
-				unrepresentable,
+				...run,
 				probes,
 				aborted: {
 					reason: "rate_limited",
@@ -130,7 +154,7 @@ async function probeSlot(deps: TickDeps, slot: TickSlot): Promise<TickRun> {
 			};
 		}
 	}
-	return { corridors, planned: batch.length, unrepresentable, probes, aborted: null };
+	return { ...run, probes, aborted: null };
 }
 
 /** Rebuilds the public snapshot from the store and stores it. */
@@ -146,7 +170,8 @@ export async function publishSnapshot(
 		network: config.network,
 		nowMs: deps.now(),
 		tickIntervalMinutes: config.tickIntervalMinutes,
-		probesPerTick: config.probesPerTick,
+		publishIntervalMinutes: config.publishIntervalMinutes,
+		probesPerTick: config.probesPlannedPerTick,
 		slowQuoteMs: config.slowQuoteMs,
 		tierAmounts: config.tierAmounts,
 		...source,
@@ -157,8 +182,10 @@ export async function publishSnapshot(
 
 /**
  * One scheduled run: discover corridors, probe this slot's batch one target at
- * a time, store everything, then publish the snapshot. A failed discovery is
- * stored as an aborted tick and the snapshot is still rebuilt.
+ * a time and store everything. A tick whose slot index is a multiple of
+ * `publishEveryTicks` then rebuilds the snapshot, so the publish rate needs no
+ * stored state. A failed discovery is stored as an aborted tick, and a publish
+ * slot still rebuilds the snapshot.
  */
 export async function runTick(deps: TickDeps, scheduledTimeMs: number): Promise<TickRecord> {
 	const { config } = deps;
@@ -171,10 +198,7 @@ export async function runTick(deps: TickDeps, scheduledTimeMs: number): Promise<
 	const run = await probeSlot(deps, slot);
 	const finishedMs = deps.now();
 	const tick: TickRecord = { slot, startedAt, finishedAt: isoAt(finishedMs), ...run };
-	await deps.store.saveTick(tick, {
-		dropRawBefore:
-			config.rawRetentionDays === 0 ? null : isoAt(finishedMs - config.rawRetentionDays * DAY_MS),
-	});
-	await publishSnapshot(deps);
+	await deps.store.saveTick(tick);
+	if (slot.index % config.publishEveryTicks === 0) await publishSnapshot(deps);
 	return tick;
 }

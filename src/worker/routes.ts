@@ -1,5 +1,6 @@
 import { isCorridorId, isoAt } from "../domain/brands";
 import { buildHistory, buildMetrics } from "../domain/publish";
+import { figureDaysAt } from "../domain/retention";
 import type { Store } from "../store/store";
 import type { ConfigResult } from "./config";
 import { readHealth } from "./health";
@@ -15,7 +16,6 @@ export interface RouteDeps {
 const DISCLAIMER =
 	"Corridor Weather is an unofficial open-source project. It is not an Atum product or service.";
 const DEFAULT_HISTORY_DAYS = 7;
-const MAX_HISTORY_DAYS = 30;
 const DAY_MS = 86_400_000;
 const PUBLIC_CACHE = "public, max-age=60";
 const HISTORY_PATH = /^\/api\/v1\/corridors\/(.+)\/history\.json$/;
@@ -47,11 +47,12 @@ function problem(request: Request, status: number, error: string, message: strin
 	return json(request, { error, message }, status);
 }
 
-function historyDays(param: string | null): number | null {
+/** The `days` parameter: 1 to `maxDays`, the days probes are kept. */
+function historyDays(param: string | null, maxDays: number): number | null {
 	if (param === null) return DEFAULT_HISTORY_DAYS;
 	if (!/^\d+$/.test(param)) return null;
 	const days = Number(param);
-	return days >= 1 && days <= MAX_HISTORY_DAYS ? days : null;
+	return days >= 1 && days <= maxDays ? days : null;
 }
 
 function decodedCorridor(encoded: string): string | null {
@@ -106,21 +107,25 @@ export async function handleRequest(request: Request, deps: RouteDeps): Promise<
 		if (corridorId === null || !isCorridorId(corridorId)) {
 			return problem(request, 404, "unknown_corridor", "No such corridor.");
 		}
-		const days = historyDays(url.searchParams.get("days"));
+		const maxDays = config.retention.probeDays;
+		const days = historyDays(url.searchParams.get("days"), maxDays);
 		if (days === null) {
-			return problem(request, 400, "invalid_days", `days must be 1 to ${MAX_HISTORY_DAYS}.`);
+			return problem(request, 400, "invalid_days", `days must be 1 to ${maxDays}.`);
 		}
 		if (!(await store.hasCorridor(config.network, corridorId))) {
 			return problem(request, 404, "unknown_corridor", "No such corridor.");
 		}
-		const readings = await store.readHistory(
-			config.network,
-			corridorId,
-			isoAt(nowMs - days * DAY_MS),
-		);
+		const [readings, daily] = await Promise.all([
+			store.readHistory(config.network, corridorId, isoAt(nowMs - days * DAY_MS)),
+			store.readDailyFigures(
+				config.network,
+				corridorId,
+				figureDaysAt(nowMs, config.retention.dailyDays),
+			),
+		]);
 		return json(
 			request,
-			buildHistory({ network: config.network, corridorId, nowMs, days, readings }),
+			buildHistory({ network: config.network, corridorId, nowMs, days, readings, daily }),
 			200,
 			PUBLIC_CACHE,
 		);

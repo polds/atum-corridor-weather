@@ -6,8 +6,10 @@ import {
 	buildSnapshot,
 	readingOf,
 } from "../../src/domain/publish";
+import { isUtcDay } from "../../src/domain/retention";
 import { probeTargets, slotAt } from "../../src/domain/schedule";
-import type { ProbeRecord, QuoteObservation } from "../../src/domain/types";
+import type { DailyFigures } from "../../src/domain/snapshot";
+import type { AmountTier, ProbeRecord, QuoteObservation } from "../../src/domain/types";
 import { ARB_TO_BASE_USDC, corridorById, testnetCorridors } from "../support/fixtures";
 import { probeIdOf } from "../support/ids";
 import { atomic, corridorId, iso, reading, tick } from "../support/readings";
@@ -82,6 +84,7 @@ describe("buildSnapshot", () => {
 		network: "testnet",
 		nowMs: NOW,
 		tickIntervalMinutes: 5,
+		publishIntervalMinutes: 5,
 		probesPerTick: 30,
 		slowQuoteMs: 2500,
 		tierAmounts: { small: "1", typical: "25", large: "250" },
@@ -107,6 +110,7 @@ describe("buildSnapshot", () => {
 			network: "testnet",
 			nowMs: NOW,
 			tickIntervalMinutes: 5,
+			publishIntervalMinutes: 5,
 			probesPerTick: 30,
 			slowQuoteMs: 2500,
 			tierAmounts: { large: "250", small: "1" },
@@ -123,6 +127,31 @@ describe("buildSnapshot", () => {
 		expect(snapshot.cadence).toStrictEqual({ probesPerTick: 30, sweepHours: 4.6 });
 		expect(snapshot.lastTick?.slotStart).toBe("2026-11-22T11:55:00.000Z");
 		expect(snapshot.generatedAt).toBe("2026-11-22T12:00:00.000Z");
+	});
+
+	it("counts prober_stale in publish intervals, which it publishes with the tick interval", () => {
+		const at = (publishIntervalMinutes: number) =>
+			buildSnapshot({
+				network: "testnet",
+				nowMs: NOW,
+				tickIntervalMinutes: 2,
+				publishIntervalMinutes,
+				probesPerTick: 6,
+				slowQuoteMs: 2500,
+				tierAmounts: { small: "1" },
+				corridors: [corridor],
+				tiers: [],
+				lastQuotes: [],
+				// 24 minutes before NOW: twelve ticks, but under three 10-minute publishes.
+				lastTick: tick("2026-11-22T11:35:00.000Z"),
+				errorRunStart: null,
+			});
+		expect(at(10)).toMatchObject({
+			tickIntervalMinutes: 2,
+			publishIntervalMinutes: 10,
+			alerts: [],
+		});
+		expect(at(2).alerts.map((alert) => alert.kind)).toStrictEqual(["prober_stale"]);
 	});
 
 	it("labels every asset's chain", () => {
@@ -149,6 +178,20 @@ describe("buildSnapshot", () => {
 	});
 });
 
+function figures(day: string, tier: AmountTier): DailyFigures {
+	if (!isUtcDay(day)) throw new Error(day);
+	return {
+		day,
+		tier,
+		probes: 1,
+		outcomes: { quoted: 1, declined: 0, silent: 0, incomplete: 0, gateway_error: 0 },
+		bestSpreadBps: { min: 2, mean: 2, max: 2 },
+		maxOperatorCount: 1,
+		firstQuoteMs: { min: 600, mean: 600, max: 600 },
+		declines: [],
+	};
+}
+
 describe("buildHistory", () => {
 	it("lists points oldest first, small before large within one time", () => {
 		const history = buildHistory({
@@ -161,7 +204,17 @@ describe("buildHistory", () => {
 				reading("small", "quoted", "2026-11-21T11:55:10.000Z"),
 				reading("small", "quoted", "2026-11-22T11:55:10.000Z"),
 			],
+			daily: [
+				figures("2026-11-21", "large"),
+				figures("2026-11-21", "small"),
+				figures("2026-11-20", "typical"),
+			],
 		});
+		expect(history.daily.map((entry) => [entry.day, entry.tier])).toStrictEqual([
+			["2026-11-20", "typical"],
+			["2026-11-21", "small"],
+			["2026-11-21", "large"],
+		]);
 		expect(history.points.map((point) => [point.probedAt, point.tier])).toStrictEqual([
 			["2026-11-21T11:55:10.000Z", "small"],
 			["2026-11-22T11:55:10.000Z", "small"],
@@ -181,6 +234,7 @@ describe("buildHealth", () => {
 		network: "testnet",
 		nowMs: NOW,
 		tickIntervalMinutes: 5,
+		publishIntervalMinutes: 5,
 		probesPerTick: 30,
 		slowQuoteMs: 100,
 		tierAmounts: { small: "1" },
@@ -200,7 +254,7 @@ describe("buildHealth", () => {
 		const health = buildHealth({
 			network: "testnet",
 			nowMs: NOW,
-			tickIntervalMinutes: 5,
+			publishIntervalMinutes: 5,
 			snapshot,
 		});
 		expect(health.status).toBe("ok");
@@ -213,7 +267,7 @@ describe("buildHealth", () => {
 		const health = buildHealth({
 			network: "testnet",
 			nowMs: later,
-			tickIntervalMinutes: 5,
+			publishIntervalMinutes: 5,
 			snapshot,
 		});
 		expect(health.status).toBe("alerting");
@@ -225,7 +279,7 @@ describe("buildHealth", () => {
 		const health = buildHealth({
 			network: "testnet",
 			nowMs: NOW,
-			tickIntervalMinutes: 5,
+			publishIntervalMinutes: 5,
 			snapshot: null,
 		});
 		expect(health).toMatchObject({ status: "alerting", lastTickFinishedAt: null });
@@ -235,7 +289,7 @@ describe("buildHealth", () => {
 		const health = buildHealth({
 			network: "testnet",
 			nowMs: NOW,
-			tickIntervalMinutes: 5,
+			publishIntervalMinutes: 5,
 			snapshot,
 		});
 		const lines = buildMetrics({ network: "testnet", snapshot, health }).split("\n");
@@ -260,7 +314,7 @@ describe("buildHealth", () => {
 		const health = buildHealth({
 			network: "testnet",
 			nowMs: NOW,
-			tickIntervalMinutes: 5,
+			publishIntervalMinutes: 5,
 			snapshot,
 		});
 		const text = buildMetrics({ network: "testnet", snapshot: null, health });

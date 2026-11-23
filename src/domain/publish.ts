@@ -7,6 +7,7 @@ import {
 	type Alert,
 	type CorridorConditions,
 	type CorridorHistory,
+	type DailyFigures,
 	type HealthReport,
 	SNAPSHOT_SCHEMA_VERSION,
 	type Snapshot,
@@ -76,6 +77,8 @@ export interface SnapshotInput {
 	readonly network: Network;
 	readonly nowMs: number;
 	readonly tickIntervalMinutes: number;
+	readonly publishIntervalMinutes: number;
+	/** The probes a tick runs: `PROBES_PER_TICK` after the subrequest cap. */
 	readonly probesPerTick: number;
 	readonly slowQuoteMs: number;
 	readonly tierAmounts: TierAmounts;
@@ -142,6 +145,7 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
 		network: input.network,
 		generatedAt: isoAt(input.nowMs),
 		tickIntervalMinutes: input.tickIntervalMinutes,
+		publishIntervalMinutes: input.publishIntervalMinutes,
 		cadence: {
 			probesPerTick: input.probesPerTick,
 			sweepHours: sweepHours(
@@ -156,7 +160,7 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
 		corridors,
 		alerts: alertsFor({
 			nowMs: input.nowMs,
-			tickIntervalMinutes: input.tickIntervalMinutes,
+			publishIntervalMinutes: input.publishIntervalMinutes,
 			slowQuoteMs: input.slowQuoteMs,
 			lastTick,
 			errorRunStart: input.errorRunStart,
@@ -172,6 +176,7 @@ export function buildHistory(params: {
 	readonly nowMs: number;
 	readonly days: number;
 	readonly readings: readonly TierReading[];
+	readonly daily: readonly DailyFigures[];
 }): CorridorHistory {
 	return {
 		schemaVersion: SNAPSHOT_SCHEMA_VERSION,
@@ -196,6 +201,10 @@ export function buildHistory(params: {
 				firstQuoteMs: reading.firstQuoteMs,
 				declines: reading.declines,
 			})),
+		daily: [...params.daily].sort(
+			(a, b) =>
+				compareText(a.day, b.day) || AMOUNT_TIERS.indexOf(a.tier) - AMOUNT_TIERS.indexOf(b.tier),
+		),
 	};
 }
 
@@ -206,13 +215,13 @@ export function buildHistory(params: {
 export function buildHealth(params: {
 	readonly network: Network;
 	readonly nowMs: number;
-	readonly tickIntervalMinutes: number;
+	readonly publishIntervalMinutes: number;
 	readonly snapshot: Snapshot | null;
 }): HealthReport {
 	const lastTickFinishedAt = params.snapshot?.lastTick?.finishedAt ?? null;
 	const stale = staleAlert({
 		nowMs: params.nowMs,
-		tickIntervalMinutes: params.tickIntervalMinutes,
+		publishIntervalMinutes: params.publishIntervalMinutes,
 		lastTickFinishedAt,
 	});
 	const alerts = [
@@ -309,7 +318,7 @@ export function buildMetrics(params: {
 		),
 		...perTick(
 			"corridor_weather_last_tick_timestamp_seconds",
-			"Unix time the last tick finished.",
+			"Unix time the newest tick in the snapshot finished. The snapshot is rebuilt once per publish interval.",
 			(last) => Date.parse(last.finishedAt) / 1000,
 		),
 		...perTick(

@@ -1,13 +1,17 @@
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
+import { addDays, dayAt } from "../../src/domain/retention";
+import type { CorridorHistory } from "../../src/domain/snapshot";
 import { createStore } from "../../src/store/store";
 import { parseConfig } from "../../src/worker/config";
+import { runMaintenance } from "../../src/worker/maintenance";
 import { handleRequest } from "../../src/worker/routes";
 import { runTick } from "../../src/worker/tick";
 import { clearTables } from "../support/db";
 import type { Scenario } from "../support/fake-gateway";
 import { ARB_TO_BASE_USDC, declinedWith, fixtures, QUOTED_SETTLER } from "../support/fixtures";
+import { declinedFor, QUOTED, storeTick } from "../support/probes";
 import { ONE_TARGET, testConfig, tickHarness } from "../support/tick";
 
 const INTERVAL_MS = 5 * 60_000;
@@ -65,6 +69,25 @@ describe("read-only routes", () => {
 		});
 	});
 
+	it("serves a snapshot stored before publishIntervalMinutes existed until the next publish", async () => {
+		await tickAt(0, () => fixtures.quoted);
+		const { publishIntervalMinutes, ...older } = JSON.parse(
+			(await createStore(env.DB).readSnapshotJson("testnet")) ?? "null",
+		);
+		expect(publishIntervalMinutes).toBe(5);
+		await env.DB.prepare("UPDATE snapshots SET snapshot_json = ?1 WHERE network = 'testnet'")
+			.bind(JSON.stringify(older))
+			.run();
+
+		const snapshot = await get("/api/v1/snapshot.json");
+		expect(snapshot.status).toBe(200);
+		expect(await snapshot.json()).toStrictEqual(older);
+		const health = await get("/api/v1/health");
+		expect(health.status).toBe(200);
+		expect(await health.json()).toMatchObject({ status: "ok", alerts: [] });
+		expect((await get("/metrics")).status).toBe(200);
+	});
+
 	it("serves a corridor's history for a number of days", async () => {
 		await tickAt(1, () => fixtures.quoted);
 		await tickAt(0, () => fixtures.declinedInternal);
@@ -83,10 +106,45 @@ describe("read-only routes", () => {
 				},
 			],
 		});
-		expect((await get(`${HISTORY}?days=30`)).status).toBe(200);
-		expect((await get(`${HISTORY}?days=31`)).status).toBe(400);
 		expect((await get(`${HISTORY}?days=0`)).status).toBe(400);
 		expect((await get(`${HISTORY}?days=week`)).status).toBe(400);
+	});
+
+	it("serves points for at most PROBE_RETENTION_DAYS days, and the corridor's daily figures", async () => {
+		await tickAt(0, () => fixtures.quoted);
+		const store = createStore(env.DB);
+		// Two days back, so the day is complete whatever time the test runs.
+		const earlier = addDays(dayAt(Date.now()), -2);
+		await storeTick(store, `${earlier}T10:00:00.000Z`, [{ outcome: QUOTED }]);
+		await storeTick(store, `${earlier}T12:00:00.000Z`, [
+			{ outcome: declinedFor([{ reason: "INTERNAL", count: 2 }]) },
+		]);
+		await runMaintenance({ config: testConfig(), store, now: () => Date.now() });
+
+		const retention = env.PROBE_RETENTION_DAYS;
+		const response = await get(`${HISTORY}?days=${retention}`);
+		expect(response.status).toBe(200);
+		const history = (await response.json()) as CorridorHistory;
+		expect(history).toMatchObject({ days: Number(retention) });
+		expect(history.points).toHaveLength(3);
+		expect(history.daily).toStrictEqual([
+			{
+				day: earlier,
+				tier: "small",
+				probes: 2,
+				outcomes: { quoted: 1, declined: 1, silent: 0, incomplete: 0, gateway_error: 0 },
+				bestSpreadBps: { min: 2, mean: 2, max: 2 },
+				maxOperatorCount: 1,
+				firstQuoteMs: { min: 600, mean: 600, max: 600 },
+				declines: [{ reason: "INTERNAL", count: 2 }],
+			},
+		]);
+		const over = await get(`${HISTORY}?days=${Number(retention) + 1}`);
+		expect(over.status).toBe(400);
+		expect(await over.json()).toStrictEqual({
+			error: "invalid_days",
+			message: `days must be 1 to ${retention}.`,
+		});
 	});
 
 	it("answers 404 for an unknown corridor and an unknown API path", async () => {

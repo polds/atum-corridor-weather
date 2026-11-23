@@ -1,12 +1,22 @@
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SUBREQUEST_RESERVE } from "../../src/domain/schedule";
 import type { RawExchange } from "../../src/domain/types";
 import { createGatewayClient } from "../../src/gateway/client";
 import { createStore } from "../../src/store/store";
+import type { Config } from "../../src/worker/config";
+import { readHealth } from "../../src/worker/health";
 import { runTick, type TickDeps } from "../../src/worker/tick";
 import { clearTables } from "../support/db";
-import { FakeClock, type Handler, jsonResponse, scriptedFetch } from "../support/fake-gateway";
+import {
+	FakeClock,
+	type Handler,
+	jsonResponse,
+	SUBREQUEST_REFUSAL,
+	scriptedFetch,
+} from "../support/fake-gateway";
 import { declinedWith, fixtures, type ProbeFixture, QUOTED_SETTLER } from "../support/fixtures";
+import { readRawExchanges } from "../support/raw";
 import { ONE_TARGET, postedRequestIds, testConfig, tickHarness } from "../support/tick";
 
 const SCHEDULED = Date.parse("2026-11-22T10:35:00.000Z");
@@ -68,7 +78,14 @@ describe("runTick", () => {
 			.first("raw_json");
 		const stored: unknown = typeof raw === "string" ? JSON.parse(raw) : null;
 		expect(stored).toMatchObject({ requestBody: { request_id: tick.probes[0]?.id } });
-		expect(stored).toHaveProperty("exchanges", tick.probes[0]?.raw);
+		expect(await readRawExchanges(tick.probes[0]?.id ?? "")).toStrictEqual(
+			tick.probes[0]?.raw.map(({ method, path, status, responseBody }) => ({
+				method,
+				path,
+				status,
+				responseBody,
+			})),
+		);
 		expect(String(raw)).toContain(QUOTED_SETTLER);
 
 		const snapshot = await store.readSnapshot("testnet");
@@ -189,22 +206,6 @@ describe("runTick", () => {
 		expect((await store.readSnapshot("testnet"))?.alerts).toStrictEqual([]);
 	});
 
-	it("drops raw exchanges older than the retention window", async () => {
-		await env.DB.prepare(
-			"INSERT INTO probe_raw (probe_id, created_at, raw_json) VALUES ('old', '2026-11-01T00:00:00.000Z', '{}')",
-		).run();
-		const { deps } = tickHarness({
-			startMs: SCHEDULED + 1000,
-			config: testConfig({ ...ONE_TARGET, RAW_RETENTION_DAYS: "14" }),
-			scenario: quotedEverywhere,
-		});
-		await runTick(deps, SCHEDULED);
-		const ids = await env.DB.prepare("SELECT probe_id FROM probe_raw").all();
-		expect(ids.results).toStrictEqual([
-			{ probe_id: "cw1.testnet.20261122T1035Z.7ae33acb9dd6.small" },
-		]);
-	});
-
 	it("stores each decline reason of a declined probe", async () => {
 		const { deps } = tickHarness({
 			startMs: SCHEDULED + 1000,
@@ -222,9 +223,12 @@ describe("runTick", () => {
 });
 
 describe("oversized gateway responses", () => {
-	/** The quoted fixture with an unknown field of `bytes` characters on every poll answer. */
+	/**
+	 * The quoted fixture with an unknown field of `bytes` characters on every poll
+	 * answer. Each answer's field differs, so no two bodies are the same.
+	 */
 	function padded(bytes: number, polls: number): ProbeFixture {
-		const pad = "x".repeat(bytes);
+		const pad = (poll: number) => `${poll}${"x".repeat(bytes)}`;
 		const [create, ...answers] = fixtures.quoted.events;
 		const last = answers.at(-1);
 		if (create === undefined || last === undefined) throw new Error("fixture has no events");
@@ -235,9 +239,9 @@ describe("oversized gateway responses", () => {
 				create,
 				...Array.from({ length: polls - 1 }, (_, index) => {
 					const event = collecting[Math.min(index, collecting.length - 1)] ?? last;
-					return { ...event, json: { ...(event.json as object), pad } };
+					return { ...event, json: { ...(event.json as object), pad: pad(index) } };
 				}),
-				{ ...last, json: { ...(last.json as object), pad } },
+				{ ...last, json: { ...(last.json as object), pad: pad(polls) } },
 			],
 		};
 	}
@@ -284,6 +288,8 @@ describe("oversized gateway responses", () => {
 			CORRIDOR_FILTER: "^eip155:\\d+/USDC>eip155:\\d+/USDC$",
 			AMOUNT_TIERS: '{"small":"1","typical":"25","large":"100"}',
 			PROBES_PER_TICK: "15",
+			// 15 probes of 7 requests need more than the Workers Free 50.
+			SUBREQUEST_LIMIT: "10000",
 		});
 		const hostile = tickHarness({
 			startMs: SCHEDULED + 1000,
@@ -348,12 +354,12 @@ describe("oversized gateway responses", () => {
 		const { deps, store } = tickHarness({
 			startMs: SCHEDULED + 1000,
 			config: testConfig(ONE_TARGET),
-			scenario: () => padded(240_000, 10),
+			scenario: () => padded(240_000, 6),
 		});
 		const tick = await runTick(deps, SCHEDULED);
 		const [probe] = tick.probes;
 		expect(probe?.outcome.kind).toBe("quoted");
-		expect(probe?.raw).toHaveLength(11);
+		expect(probe?.raw).toHaveLength(7);
 		expect(await storedProbe()).toMatchObject({ outcome: "quoted" });
 		const raw = await env.DB.prepare("SELECT raw_json FROM probe_raw").first("raw_json");
 		expect(String(raw).length).toBeLessThanOrEqual(1024 * 1024);
@@ -621,5 +627,311 @@ describe("tier amounts a token cannot represent", () => {
 		});
 		const tick = await runTick(deps, SCHEDULED);
 		expect(tick).toMatchObject({ planned: 1, unrepresentable: 1 });
+	});
+});
+
+/** The quoted fixture with every answer `collecting`, so a probe polls until its schedule ends. */
+const collectingForever: ProbeFixture = {
+	...fixtures.quoted,
+	events: fixtures.quoted.events.map((event) => ({
+		...event,
+		json: { ...(event.json as object), status: "collecting" },
+	})),
+};
+
+describe("the subrequest budget", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("plans 6 probes on the free-plan default and keeps the reserve out of 50 requests", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		// SUBREQUEST_LIMIT 50, a 3 s window polled every 500 ms, and the 30 probes testConfig pins.
+		const config = testConfig();
+		expect(config).toMatchObject({
+			subrequestLimit: 50,
+			quoteWindowSeconds: 3,
+			pollIntervalMs: 500,
+			probesPerTick: 30,
+		});
+		const { deps, requests, store } = tickHarness({
+			startMs: SCHEDULED + 1000,
+			config,
+			scenario: () => collectingForever,
+		});
+		const tick = await runTick(deps, SCHEDULED);
+
+		expect(tick.planned).toBe(6);
+		expect(tick.probes.map((probe) => probe.outcome.kind)).toStrictEqual(
+			Array(6).fill("incomplete"),
+		);
+		// Every probe polls to the end here, so this is the most a tick can send.
+		expect(requests.length).toBe(1 + 6 * 7);
+		expect(requests.length).toBeLessThanOrEqual(50 - SUBREQUEST_RESERVE);
+		const capped = warn.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { event?: unknown }).event === "probes_capped",
+		);
+		expect(capped).toStrictEqual([
+			[
+				{
+					event: "probes_capped",
+					configured: 30,
+					planned: 6,
+					subrequestLimit: 50,
+					requestsPerProbe: 7,
+				},
+			],
+		]);
+		expect((await store.readSnapshot("testnet"))?.cadence).toStrictEqual({
+			probesPerTick: 6,
+			sweepHours: 23,
+		});
+	});
+
+	it("plans the configured 30 probes on a paid limit and logs no cap", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const config = testConfig({ SUBREQUEST_LIMIT: "10000" });
+		expect(config.probesPlannedPerTick).toBe(30);
+		const { deps, store } = tickHarness({
+			startMs: SCHEDULED + 1000,
+			config,
+			scenario: quotedEverywhere,
+		});
+		const tick = await runTick(deps, SCHEDULED);
+		expect(tick.planned).toBe(30);
+		expect(tick.probes).toHaveLength(30);
+		expect(warn).not.toHaveBeenCalledWith(expect.objectContaining({ event: "probes_capped" }));
+		expect((await store.readSnapshot("testnet"))?.cadence).toMatchObject({ probesPerTick: 30 });
+	});
+
+	it("covers every target exactly once per sweep at the planned size", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const config = testConfig({
+			CORRIDOR_FILTER: "^eip155:421614/USDC>",
+			AMOUNT_TIERS: '{"small":"1","typical":"25"}',
+			PROBES_PER_TICK: "30",
+			SUBREQUEST_LIMIT: "50",
+		});
+		const probed: string[] = [];
+		let targets = 0;
+		for (let index = 0; probed.length === 0 || probed.length < targets; index += 1) {
+			const slotMs = SCHEDULED + index * 300_000;
+			const run = tickHarness({ startMs: slotMs + 1000, config, scenario: quotedEverywhere });
+			const tick = await runTick(run.deps, slotMs);
+			targets = tick.corridors.length * 2;
+			expect(tick.planned).toBe(6);
+			probed.push(
+				...tick.probes.map((probe) => `${probe.target.corridor.id} ${probe.target.tier}`),
+			);
+		}
+		expect(targets).toBe(46);
+		const sweep = probed.slice(0, targets);
+		expect(new Set(sweep).size).toBe(targets);
+	});
+
+	it("stops as subrequest_limit and stores no row for the probe that hit it", async () => {
+		let sent = 0;
+		const { deps, store } = tickHarness({
+			startMs: SCHEDULED + 1000,
+			config: testConfig({
+				PROBES_PER_TICK: "4",
+				AMOUNT_TIERS: '{"small":"1"}',
+				SUBREQUEST_LIMIT: "10000",
+			}),
+			scenario: quotedEverywhere,
+			// Like the platform: past a number of subrequests, every later fetch throws.
+			wrap: (handler) => (request) => {
+				sent += 1;
+				if (sent > 1 + 2 * 7 + 3) throw new Error(SUBREQUEST_REFUSAL);
+				return handler(request);
+			},
+		});
+		const tick = await runTick(deps, SCHEDULED);
+		expect(tick.aborted).toMatchObject({
+			reason: "subrequest_limit",
+			message: expect.stringContaining(SUBREQUEST_REFUSAL),
+		});
+		expect(tick.planned).toBe(4);
+		expect(tick.probes.map((probe) => probe.outcome.kind)).toStrictEqual(["quoted", "quoted"]);
+		expect(await count("probes")).toBe(2);
+		expect(await count("probe_raw")).toBe(2);
+		const snapshot = await store.readSnapshot("testnet");
+		expect(snapshot?.lastTick).toMatchObject({
+			completed: 2,
+			gatewayErrors: 0,
+			aborted: "subrequest_limit",
+		});
+		expect(snapshot?.alerts.map((alert) => alert.kind)).not.toContain("gateway_errors");
+	});
+});
+
+/** A store over `env.DB` that adds up `meta.rows_written` of every batch it sends. */
+function countingDeps(deps: TickDeps): { readonly deps: TickDeps; readonly written: () => number } {
+	let written = 0;
+	const db = new Proxy(env.DB, {
+		get(target, property) {
+			if (property === "batch") {
+				return async (statements: D1PreparedStatement[]) => {
+					const results = await target.batch(statements);
+					for (const result of results) written += result.meta.rows_written;
+					return results;
+				};
+			}
+			const value: unknown = Reflect.get(target, property);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	return {
+		deps: { ...deps, store: createStore(db) },
+		written: () => {
+			const total = written;
+			written = 0;
+			return total;
+		},
+	};
+}
+
+describe("the corridor list", () => {
+	const config = testConfig({ PROBES_PER_TICK: "1", AMOUNT_TIERS: '{"small":"1"}' });
+	/** The testnet listing without Base Sepolia: a smaller list, B. */
+	const withoutBase = () => {
+		const { "eip155:84532": _, ...rest } = fixtures.testnetDefaults;
+		return jsonResponse(200, rest);
+	};
+	const down = () => jsonResponse(503, { code: "SERVICE_UNAVAILABLE", message: "down" });
+
+	async function tickAt(
+		index: number,
+		options: { readonly defaults?: () => Response; readonly config?: Config } = {},
+	): Promise<{ readonly written: number; readonly current: number }> {
+		const slotMs = SCHEDULED + index * 300_000;
+		const run = tickHarness({
+			startMs: slotMs + 1000,
+			config: options.config ?? config,
+			scenario: quotedEverywhere,
+			...(options.defaults === undefined ? {} : { defaults: options.defaults }),
+		});
+		const counting = countingDeps(run.deps);
+		await runTick(counting.deps, slotMs);
+		const snapshot = await run.store.readSnapshot("testnet");
+		return { written: counting.written(), current: snapshot?.corridors.length ?? -1 };
+	}
+
+	async function lastSeen(): Promise<unknown[]> {
+		const { results } = await env.DB.prepare(
+			"SELECT last_seen, count(*) AS n FROM corridors GROUP BY last_seen ORDER BY last_seen",
+		).all();
+		return results;
+	}
+
+	it("is not rewritten while it is unchanged", async () => {
+		const first = await tickAt(0);
+		const second = await tickAt(1);
+		expect(first.current).toBe(552);
+		expect(second.current).toBe(552);
+		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:35:00.000Z", n: 552 }]);
+		expect(second.written).toBeLessThan(first.written / 10);
+		for (let index = 2; index < 6; index += 1) {
+			expect(await tickAt(index)).toMatchObject({ current: 552, written: second.written });
+		}
+		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:35:00.000Z", n: 552 }]);
+	});
+
+	it("follows the list from A to B and back to A", async () => {
+		expect((await tickAt(0)).current).toBe(552);
+		const b = await tickAt(1, { defaults: withoutBase });
+		expect(b.current).toBeLessThan(552);
+		expect(b.current).toBeGreaterThan(0);
+		expect((await tickAt(2, { defaults: withoutBase })).current).toBe(b.current);
+		const backToA = await tickAt(3);
+		expect(backToA.current).toBe(552);
+		expect(backToA.written).toBeGreaterThan(552);
+		expect((await tickAt(4)).current).toBe(552);
+	});
+
+	it("keeps the list through a failed discovery between two equal lists", async () => {
+		const first = await tickAt(0);
+		expect((await tickAt(1, { defaults: down })).current).toBe(552);
+		const after = await tickAt(2);
+		expect(after.current).toBe(552);
+		expect(after.written).toBeLessThan(first.written / 10);
+		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:35:00.000Z", n: 552 }]);
+	});
+
+	it("converges on a database that holds corridor rows but no stored hash", async () => {
+		await tickAt(0);
+		await env.DB.prepare("DELETE FROM corridor_sets").run();
+		const converging = await tickAt(1);
+		expect(converging.written).toBeGreaterThan(552);
+		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:40:00.000Z", n: 552 }]);
+		const settled = await tickAt(2);
+		expect(settled.written).toBeLessThan(converging.written / 10);
+		expect(await lastSeen()).toStrictEqual([{ last_seen: "2026-11-22T10:40:00.000Z", n: 552 }]);
+	});
+});
+
+describe("publishing on every PUBLISH_EVERY_TICKS-th tick", () => {
+	// Ticks of 2 minutes, a publish every 5 ticks: slots that start at :00, :10, :20 and so on.
+	const config = testConfig({
+		PROBE_CRON: "*/2 * * * *",
+		CANARY_CRON: "2,12,22,32,42,52 * * * *",
+		PUBLISH_EVERY_TICKS: "5",
+		PROBES_PER_TICK: "2",
+		AMOUNT_TIERS: '{"small":"1"}',
+	});
+	const PUBLISH_SLOT = Date.parse("2026-11-22T10:50:00.000Z");
+	const TICK_MS = 2 * 60_000;
+
+	async function tickAt(scheduledMs: number) {
+		const run = tickHarness({ startMs: scheduledMs + 1000, config, scenario: quotedEverywhere });
+		return { tick: await runTick(run.deps, scheduledMs), store: run.store };
+	}
+
+	it("stores the probes of the ticks between publishes and publishes them all on the next publish slot", async () => {
+		const store = createStore(env.DB);
+		for (let before = 4; before >= 1; before -= 1) {
+			const { tick } = await tickAt(PUBLISH_SLOT - before * TICK_MS);
+			expect(tick.probes).toHaveLength(2);
+		}
+		expect(await count("ticks")).toBe(4);
+		expect(await count("probes")).toBe(8);
+		expect(await store.readSnapshotJson("testnet")).toBeNull();
+
+		const { tick } = await tickAt(PUBLISH_SLOT);
+		const snapshot = await store.readSnapshot("testnet");
+		expect(Date.parse(snapshot?.generatedAt ?? "")).toBeGreaterThanOrEqual(
+			Date.parse(tick.finishedAt),
+		);
+		expect(snapshot?.lastTick?.slotStart).toBe("2026-11-22T10:50:00.000Z");
+		expect(snapshot).toMatchObject({ tickIntervalMinutes: 2, publishIntervalMinutes: 10 });
+		expect(snapshot?.corridors.filter((corridor) => corridor.condition === "fair")).toHaveLength(
+			10,
+		);
+	});
+
+	it("leaves the stored snapshot untouched on a tick that is not on a publish slot", async () => {
+		await tickAt(PUBLISH_SLOT);
+		const store = createStore(env.DB);
+		const published = await store.readSnapshotJson("testnet");
+		expect(published).not.toBeNull();
+
+		const { tick } = await tickAt(PUBLISH_SLOT + TICK_MS);
+		expect(tick.probes).toHaveLength(2);
+		expect(await count("probes")).toBe(4);
+		expect(await store.readSnapshotJson("testnet")).toBe(published);
+	});
+
+	it("raises prober_stale after three publish intervals, not three tick intervals", async () => {
+		const { tick, store } = await tickAt(PUBLISH_SLOT);
+		const finishedMs = Date.parse(tick.finishedAt);
+		const staleKinds = async (afterMs: number) =>
+			(await readHealth({ config, store, nowMs: finishedMs + afterMs })).health.alerts
+				.map((alert) => alert.kind)
+				.filter((kind) => kind === "prober_stale");
+
+		// Seven minutes is past three 2-minute ticks, and normal between 10-minute publishes.
+		expect(await staleKinds(7 * 60_000)).toStrictEqual([]);
+		expect(await staleKinds(30 * 60_000)).toStrictEqual([]);
+		expect(await staleKinds(30 * 60_000 + 1)).toStrictEqual(["prober_stale"]);
 	});
 });

@@ -13,6 +13,7 @@ function snapshotWith(alerts: readonly Alert[]): Snapshot {
 		network: "testnet",
 		generatedAt: GENERATED_AT,
 		tickIntervalMinutes: 5,
+		publishIntervalMinutes: 5,
 		cadence: { probesPerTick: 30, sweepHours: 4.6 },
 		tiers: ["small", "typical", "large"],
 		lastTick: null,
@@ -67,6 +68,20 @@ describe("the stored snapshot", () => {
 		await store.saveSnapshot(small);
 
 		expect(await store.readSnapshotJson("testnet")).toBe(JSON.stringify(small));
+	});
+
+	it("reads a snapshot saved before publishIntervalMinutes existed as published every tick", async () => {
+		const { publishIntervalMinutes: _, ...older } = snapshotWith([]);
+		await env.DB.prepare(
+			"INSERT INTO snapshots (network, part, generated_at, snapshot_json) VALUES (?1, 0, ?2, ?3)",
+		)
+			.bind("testnet", GENERATED_AT, JSON.stringify({ ...older, tickIntervalMinutes: 7 }))
+			.run();
+
+		expect(await createStore(env.DB).readSnapshot("testnet")).toMatchObject({
+			tickIntervalMinutes: 7,
+			publishIntervalMinutes: 7,
+		});
 	});
 
 	it("reads no snapshot before one is saved", async () => {

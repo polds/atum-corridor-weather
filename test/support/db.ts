@@ -3,11 +3,13 @@ import { env } from "cloudflare:workers";
 const TABLES = [
 	"ticks",
 	"corridors",
+	"corridor_sets",
 	"probes",
 	"probe_declines",
 	"probe_raw",
 	"snapshots",
 	"alert_notifications",
+	"daily_stats",
 ];
 
 export async function clearTables(): Promise<void> {

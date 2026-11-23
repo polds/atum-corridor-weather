@@ -7,6 +7,9 @@ import type {
 	Condition,
 	CorridorConditions,
 	CorridorHistory,
+	DailyDecline,
+	DailyFigures,
+	DailyRange,
 	HistoryPoint,
 	Snapshot,
 	SnapshotAsset,
@@ -136,21 +139,39 @@ function schemaMismatch(v: unknown): string | null {
 	return null;
 }
 
+/**
+ * A snapshot published before `publishIntervalMinutes` existed lacks it. Such a
+ * snapshot was published on every tick, so its publish interval is the tick interval.
+ */
+type SnapshotDocument = Omit<Snapshot, "publishIntervalMinutes"> & {
+	readonly publishIntervalMinutes?: number;
+};
+
 export function parseSnapshot(json: unknown): Parsed<Snapshot> {
 	const mismatch = schemaMismatch(json);
 	if (mismatch !== null) return { ok: false, reason: mismatch };
-	if (isSnapshotDocument(json)) return { ok: true, value: json };
+	if (isSnapshotDocument(json)) {
+		return {
+			ok: true,
+			value: {
+				...json,
+				publishIntervalMinutes: json.publishIntervalMinutes ?? json.tickIntervalMinutes,
+			},
+		};
+	}
 	return { ok: false, reason: "the snapshot does not have the expected shape" };
 }
 
-function isSnapshotDocument(v: unknown): v is Snapshot {
+const isInterval = (v: unknown): v is number => isNumber(v) && v > 0;
+
+function isSnapshotDocument(v: unknown): v is SnapshotDocument {
 	return (
 		isRecord(v) &&
 		v.schemaVersion === 1 &&
 		isNetwork(v.network) &&
 		isTimestamp(v.generatedAt) &&
-		isNumber(v.tickIntervalMinutes) &&
-		v.tickIntervalMinutes > 0 &&
+		isInterval(v.tickIntervalMinutes) &&
+		(v.publishIntervalMinutes === undefined || isInterval(v.publishIntervalMinutes)) &&
 		isRecord(v.cadence) &&
 		isCount(v.cadence.probesPerTick) &&
 		isNumber(v.cadence.sweepHours) &&
@@ -162,12 +183,34 @@ function isSnapshotDocument(v: unknown): v is Snapshot {
 	);
 }
 
+/** A history published before daily figures existed has no `daily`; it reads as none. */
 export function parseHistory(json: unknown): Parsed<CorridorHistory> {
 	const mismatch = schemaMismatch(json);
 	if (mismatch !== null) return { ok: false, reason: mismatch };
-	if (isHistoryDocument(json)) return { ok: true, value: json };
+	const document = isRecord(json) && json.daily === undefined ? { ...json, daily: [] } : json;
+	if (isHistoryDocument(document)) return { ok: true, value: document };
 	return { ok: false, reason: "the history does not have the expected shape" };
 }
+
+const isDailyRange = (v: unknown): v is DailyRange =>
+	isRecord(v) && isNumber(v.min) && isNumber(v.mean) && isNumber(v.max);
+
+const isOutcomeCounts = (v: unknown): v is DailyFigures["outcomes"] =>
+	isRecord(v) && OUTCOMES.every((outcome) => isCount(v[outcome]));
+
+const isDailyDecline = (v: unknown): v is DailyDecline =>
+	isRecord(v) && isString(v.reason) && isCount(v.count);
+
+const isDailyFigures = (v: unknown): v is DailyFigures =>
+	isRecord(v) &&
+	isString(v.day) &&
+	isTier(v.tier) &&
+	isCount(v.probes) &&
+	isOutcomeCounts(v.outcomes) &&
+	orNull(isDailyRange)(v.bestSpreadBps) &&
+	isCount(v.maxOperatorCount) &&
+	orNull(isDailyRange)(v.firstQuoteMs) &&
+	arrayOf(isDailyDecline)(v.declines);
 
 function isHistoryDocument(v: unknown): v is CorridorHistory {
 	return (
@@ -177,7 +220,8 @@ function isHistoryDocument(v: unknown): v is CorridorHistory {
 		isString(v.corridorId) &&
 		isTimestamp(v.generatedAt) &&
 		isNumber(v.days) &&
-		arrayOf(isHistoryPoint)(v.points)
+		arrayOf(isHistoryPoint)(v.points) &&
+		arrayOf(isDailyFigures)(v.daily)
 	);
 }
 
@@ -349,13 +393,13 @@ export function matchesFilter(
 // ---------------------------------------------------------------------------
 // Freshness
 
-/** Stale when the snapshot is older than three tick intervals (DESIGN.md, `prober_stale`). */
+/** Stale when the snapshot is older than three publish intervals (DESIGN.md, `prober_stale`). */
 export function snapshotAgeMs(snapshot: Snapshot, nowMs: number): number {
 	return nowMs - Date.parse(snapshot.generatedAt);
 }
 
 export function isStale(snapshot: Snapshot, nowMs: number): boolean {
-	return snapshotAgeMs(snapshot, nowMs) > 3 * snapshot.tickIntervalMinutes * 60_000;
+	return snapshotAgeMs(snapshot, nowMs) > 3 * snapshot.publishIntervalMinutes * 60_000;
 }
 
 // ---------------------------------------------------------------------------

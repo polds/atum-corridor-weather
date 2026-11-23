@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { QUOTES_LOST_WINDOW_DAYS } from "../../src/domain/alerts";
 import { MAINNET_ACK, parseConfig } from "../../src/worker/config";
 
 const parse = (overrides: Readonly<Record<string, string | undefined>>) =>
@@ -31,12 +32,17 @@ describe("parseConfig", () => {
 			QUOTE_WINDOW_SECONDS: "3",
 			SLOW_QUOTE_MS: "2500",
 			CORRIDOR_FILTER: "",
-			RAW_RETENTION_DAYS: "14",
+			RAW_RETENTION_DAYS: "2",
+			PROBE_RETENTION_DAYS: "10",
+			DAILY_RETENTION_DAYS: "90",
 			PROBE_CRON: "*/15 * * * *",
 			CANARY_CRON: "3,18,33,48 * * * *",
+			MAINTENANCE_CRON: "41 4 * * *",
 			ALERT_WEBHOOK_FORMAT: "slack",
 			ALERT_MIN_SEVERITY: "critical",
 			PUBLIC_URL: "",
+			SUBREQUEST_LIMIT: "100",
+			PUBLISH_EVERY_TICKS: "4",
 		});
 		if (!result.ok) throw new Error(result.errors.join("; "));
 		expect(result.config).toStrictEqual({
@@ -45,15 +51,20 @@ describe("parseConfig", () => {
 			repositoryUrl: "https://github.com/someone/corridor-weather",
 			probeEnabled: true,
 			tickIntervalMinutes: 15,
+			publishEveryTicks: 4,
+			publishIntervalMinutes: 60,
 			probesPerTick: 12,
+			subrequestLimit: 100,
+			probesPlannedPerTick: 12,
 			tierAmounts: { small: "1", typical: "25", large: "100" },
 			pollIntervalMs: 500,
 			quoteWindowSeconds: 3,
 			slowQuoteMs: 2500,
 			corridorFilter: null,
-			rawRetentionDays: 14,
+			retention: { rawDays: 2, probeDays: 10, dailyDays: 90 },
 			probeCron: "*/15 * * * *",
 			canaryCron: "3,18,33,48 * * * *",
+			maintenanceCron: "41 4 * * *",
 			alertWebhook: null,
 			alertMinSeverity: "critical",
 			publicUrl: null,
@@ -180,11 +191,113 @@ describe("parseConfig", () => {
 		expect(parse({ POLL_INTERVAL_MS: "50" }).ok).toBe(false);
 		expect(parse({ PROBE_ENABLED: "yes" }).ok).toBe(false);
 		expect(parse({ GATEWAY_URL: "ftp://gateway.example" }).ok).toBe(false);
-		expect(parse({ RAW_RETENTION_DAYS: "0" })).toMatchObject({
-			ok: true,
-			config: { rawRetentionDays: 0 },
-		});
 	});
+
+	it("keeps every kind of row for a bounded number of days", () => {
+		const retention = (overrides: Readonly<Record<string, string | undefined>>) => {
+			const result = parse(overrides);
+			return result.ok ? result.config.retention : result.errors;
+		};
+		const unset = { RAW_RETENTION_DAYS: undefined, PROBE_RETENTION_DAYS: undefined };
+		expect(retention({ ...unset, DAILY_RETENTION_DAYS: undefined })).toStrictEqual({
+			rawDays: 3,
+			probeDays: 14,
+			dailyDays: 180,
+		});
+		// No value keeps rows forever: the database has a size limit.
+		for (const name of ["RAW_RETENTION_DAYS", "PROBE_RETENTION_DAYS", "DAILY_RETENTION_DAYS"]) {
+			expect(parse({ [name]: "0" }).ok, name).toBe(false);
+		}
+		// quotes_lost looks back QUOTES_LOST_WINDOW_DAYS in the probes, from any time of day.
+		expect(retention({ PROBE_RETENTION_DAYS: String(QUOTES_LOST_WINDOW_DAYS + 1) })).toMatchObject({
+			probeDays: QUOTES_LOST_WINDOW_DAYS + 1,
+		});
+		expect(retention({ PROBE_RETENTION_DAYS: String(QUOTES_LOST_WINDOW_DAYS) })).toStrictEqual([
+			expect.stringMatching(/^PROBE_RETENTION_DAYS: must be at least 8, because quotes_lost/),
+		]);
+		expect(retention({ RAW_RETENTION_DAYS: "14", PROBE_RETENTION_DAYS: "14" })).toMatchObject({
+			rawDays: 14,
+		});
+		expect(retention({ RAW_RETENTION_DAYS: "15", PROBE_RETENTION_DAYS: "14" })).toStrictEqual([
+			expect.stringMatching(/^RAW_RETENTION_DAYS: must not be above PROBE_RETENTION_DAYS/),
+		]);
+		expect(retention({ DAILY_RETENTION_DAYS: "13", PROBE_RETENTION_DAYS: "14" })).toStrictEqual([
+			expect.stringMatching(/^DAILY_RETENTION_DAYS: must not be below PROBE_RETENTION_DAYS/),
+		]);
+	});
+
+	it("refuses a maintenance cron that another job's trigger also fires", () => {
+		for (const name of ["PROBE_CRON", "CANARY_CRON"]) {
+			const result = parse({ MAINTENANCE_CRON: env[name as "PROBE_CRON" | "CANARY_CRON"] });
+			expect(result, name).toMatchObject({
+				ok: false,
+				errors: [expect.stringMatching(/^MAINTENANCE_CRON: must differ/)],
+			});
+		}
+		expect(parse({ MAINTENANCE_CRON: undefined }).ok).toBe(false);
+	});
+	it("plans the probes a tick can make within SUBREQUEST_LIMIT", () => {
+		// 3 s window, 500 ms interval: 7 requests per probe, plus one for /v1/defaults and the reserve.
+		const timing = { QUOTE_WINDOW_SECONDS: "3", POLL_INTERVAL_MS: "500", PROBES_PER_TICK: "30" };
+		expect(parse({ ...timing, SUBREQUEST_LIMIT: undefined })).toMatchObject({
+			ok: true,
+			config: { probesPerTick: 30, subrequestLimit: 50, probesPlannedPerTick: 6 },
+		});
+		expect(parse({ ...timing, SUBREQUEST_LIMIT: "10000" })).toMatchObject({
+			ok: true,
+			config: { probesPerTick: 30, subrequestLimit: 10_000, probesPlannedPerTick: 30 },
+		});
+		expect(parse({ ...timing, SUBREQUEST_LIMIT: "10000000" }).ok).toBe(true);
+		expect(
+			parse({ QUOTE_WINDOW_SECONDS: "1", POLL_INTERVAL_MS: "1000", SUBREQUEST_LIMIT: "9" }),
+		).toMatchObject({ ok: true, config: { probesPlannedPerTick: 1 } });
+		for (const bad of ["1", "10000001", "fifty", ""]) {
+			expect(parse({ SUBREQUEST_LIMIT: bad }), bad).toMatchObject({
+				ok: false,
+				errors: [expect.stringMatching(/^SUBREQUEST_LIMIT: /)],
+			});
+		}
+	});
+
+	it("publishes every PUBLISH_EVERY_TICKS ticks, 1 to 60, and every tick when unset", () => {
+		expect(parse({ PROBE_CRON: "*/2 * * * *", PUBLISH_EVERY_TICKS: undefined })).toMatchObject({
+			ok: true,
+			config: { tickIntervalMinutes: 2, publishEveryTicks: 1, publishIntervalMinutes: 2 },
+		});
+		for (const [cron, every, tick, publish] of [
+			["*/2 * * * *", "5", 2, 10],
+			["*/5 * * * *", "1", 5, 5],
+			["*/1 * * * *", "60", 1, 60],
+			["0 * * * *", "3", 60, 180],
+		] as const) {
+			expect(
+				parse({ PROBE_CRON: cron, PUBLISH_EVERY_TICKS: every }),
+				`${cron} ${every}`,
+			).toMatchObject({
+				ok: true,
+				config: {
+					tickIntervalMinutes: tick,
+					publishEveryTicks: Number(every),
+					publishIntervalMinutes: publish,
+				},
+			});
+		}
+		for (const bad of ["0", "61", "2.5", "-1", "five", ""]) {
+			expect(parse({ PUBLISH_EVERY_TICKS: bad }), bad).toMatchObject({
+				ok: false,
+				errors: [expect.stringMatching(/^PUBLISH_EVERY_TICKS: /)],
+			});
+		}
+	});
+
+	it("refuses a quote window and poll interval that leave no probe in the budget", () => {
+		const result = parse({ QUOTE_WINDOW_SECONDS: "60", POLL_INTERVAL_MS: "100" });
+		expect(result).toMatchObject({ ok: false, errors: [expect.any(String)] });
+		expect(result.ok || result.errors[0]).toMatch(
+			/^SUBREQUEST_LIMIT: .*QUOTE_WINDOW_SECONDS.*POLL_INTERVAL_MS/,
+		);
+	});
+
 	it("requires both crons as five fields joined by single spaces", () => {
 		for (const name of ["PROBE_CRON", "CANARY_CRON"]) {
 			const deployed = String(env[name as keyof typeof env]);

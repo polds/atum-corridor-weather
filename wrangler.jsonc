@@ -5,12 +5,13 @@
 	"compatibility_date": "2026-11-01",
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
-	// The probe cron runs a tick. The canary cron, a few minutes later, announces alert
-	// changes. scheduled() tells them apart by PROBE_CRON and CANARY_CRON and ignores
-	// any other trigger, so keep these two entries equal to those two vars. The tick
-	// interval is read from PROBE_CRON. To change the cadence, change these two
-	// entries and those two vars, and nothing else.
-	"triggers": { "crons": ["*/10 * * * *", "2,12,22,32,42,52 * * * *"] },
+	// The probe cron runs a tick. The canary cron, a few minutes after each publish,
+	// announces alert changes. The maintenance cron, once a day, reduces old probes to
+	// daily figures and deletes expired days. scheduled() tells them apart by PROBE_CRON,
+	// CANARY_CRON and MAINTENANCE_CRON and ignores any other trigger, so keep these three
+	// entries equal to those three vars. The tick interval is read from PROBE_CRON. To
+	// change the cadence, change the first two entries, their vars and PUBLISH_EVERY_TICKS.
+	"triggers": { "crons": ["*/2 * * * *", "2,12,22,32,42,52 * * * *", "37 3 * * *"] },
 	"assets": {
 		"directory": "dist/dashboard",
 		"binding": "ASSETS",
@@ -30,17 +31,34 @@
 		"NETWORK": "testnet",
 		"GATEWAY_URL": "https://payment-gw.production-testnet.atum.xyz",
 		"PROBE_ENABLED": "true",
-		"PROBES_PER_TICK": "30",
+		// Probes per tick. 6 is what SUBREQUEST_LIMIT 50 covers: 6 every 2 minutes is 180 an hour.
+		"PROBES_PER_TICK": "6",
+		// Subrequests one invocation may make. 50 is the Workers Free limit; the Workers Paid
+		// limit is 10,000. A tick plans no more probes than this covers (docs/DESIGN.md,
+		// "Platform limits").
+		"SUBREQUEST_LIMIT": "50",
+		// A tick rebuilds the snapshot when its slot index is a multiple of this. 5 ticks of
+		// 2 minutes publish every 10 minutes, at :00, :10 and so on, which keeps D1 rows read
+		// within the Workers Free limit. The dashboard and the alerts update once per publish.
+		"PUBLISH_EVERY_TICKS": "5",
 		"AMOUNT_TIERS": "{\"small\":\"1\",\"typical\":\"25\",\"large\":\"100\"}",
 		"POLL_INTERVAL_MS": "500",
 		"QUOTE_WINDOW_SECONDS": "3",
 		"SLOW_QUOTE_MS": "2500",
-		"RAW_RETENTION_DAYS": "14",
+		// Days kept besides today, deleted one day per maintenance run (docs/DESIGN.md,
+		// "Retention and long history"). Raw exchanges are the bulk of the database.
+		// PROBE_RETENTION_DAYS covers the 7 days quotes_lost looks back, plus one.
+		"RAW_RETENTION_DAYS": "3",
+		"PROBE_RETENTION_DAYS": "14",
+		"DAILY_RETENTION_DAYS": "180",
 		"CORRIDOR_FILTER": "",
 		"MAINNET_ACK": "",
 		"REPOSITORY_URL": "https://github.com/polds/atum-corridor-weather",
-		"PROBE_CRON": "*/10 * * * *",
+		"PROBE_CRON": "*/2 * * * *",
+		// Two minutes after each publish, so the canary reads a fresh snapshot.
 		"CANARY_CRON": "2,12,22,32,42,52 * * * *",
+		// Once a day at 03:37 UTC: an odd minute, so no tick, publish or canary runs with it.
+		"MAINTENANCE_CRON": "37 3 * * *",
 		// ALERT_WEBHOOK_URL is a secret: `wrangler secret put ALERT_WEBHOOK_URL`.
 		"ALERT_WEBHOOK_FORMAT": "slack",
 		"ALERT_MIN_SEVERITY": "critical",

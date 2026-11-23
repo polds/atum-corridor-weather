@@ -266,8 +266,8 @@ function renderBanners(): void {
 					"p",
 					undefined,
 					h("strong", undefined, "Stale data. "),
-					`This snapshot is ${formatDuration(snapshotAgeMs(snapshot, now))} old, longer than three tick intervals (${formatDuration(
-						3 * snapshot.tickIntervalMinutes * 60_000,
+					`This snapshot is ${formatDuration(snapshotAgeMs(snapshot, now))} old, longer than three publish intervals (${formatDuration(
+						3 * snapshot.publishIntervalMinutes * 60_000,
 					)}). The prober may have stopped, so the conditions below may be out of date.`,
 				),
 			),
@@ -1728,7 +1728,8 @@ function tickAges(): void {
 
 function scheduleRefresh(): void {
 	const load = state.load;
-	const minutes = load.kind === "ready" ? load.board.snapshot.tickIntervalMinutes : 1;
+	// A new snapshot appears once per publish interval, so polling faster finds nothing new.
+	const minutes = load.kind === "ready" ? load.board.snapshot.publishIntervalMinutes : 1;
 	window.setTimeout(() => {
 		if (document.visibilityState === "visible") void loadSnapshot().then(scheduleRefresh);
 		else scheduleRefresh();
@@ -1740,7 +1741,7 @@ window.addEventListener("scroll", hideTip, { passive: true });
 document.addEventListener("visibilitychange", () => {
 	if (document.visibilityState === "visible" && state.load.kind === "ready") {
 		const age = snapshotAgeMs(state.load.board.snapshot, Date.now());
-		if (age > state.load.board.snapshot.tickIntervalMinutes * 60_000) void loadSnapshot();
+		if (age > state.load.board.snapshot.publishIntervalMinutes * 60_000) void loadSnapshot();
 	}
 });
 window.setInterval(tickAges, 30_000);

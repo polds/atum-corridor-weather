@@ -13,6 +13,8 @@ export default defineConfig({
 		coverage: {
 			provider: "istanbul",
 			include: ["src/**"],
+			// `src/**` also matches dashboard/src. The dashboard is not Worker code.
+			exclude: ["dashboard/**"],
 			thresholds: { lines: 90, statements: 90, functions: 90, branches: 82 },
 		},
 		projects: [

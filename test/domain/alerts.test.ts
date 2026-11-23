@@ -5,7 +5,7 @@ import { corridorId, iso, reading, tick } from "../support/readings";
 const NOW = Date.parse("2026-11-22T12:00:00.000Z");
 const A = corridorId("eip155:1/erc20:0xaa>eip155:2/erc20:0xbb");
 const B = corridorId("eip155:2/erc20:0xbb>eip155:1/erc20:0xaa");
-const base = { nowMs: NOW, tickIntervalMinutes: 5, slowQuoteMs: 2500 };
+const base = { nowMs: NOW, publishIntervalMinutes: 5, slowQuoteMs: 2500 };
 const freshTick = tick("2026-11-22T11:55:00.000Z");
 
 describe("alertsFor", () => {
@@ -186,21 +186,21 @@ describe("staleAlert", () => {
 	const at = (finishedAt: string | null) =>
 		staleAlert({
 			nowMs: NOW,
-			tickIntervalMinutes: 5,
+			publishIntervalMinutes: 5,
 			lastTickFinishedAt: finishedAt === null ? null : iso(finishedAt),
 		});
 
-	it("is quiet up to three intervals after the last tick", () => {
+	it("is quiet up to three publish intervals after the last tick", () => {
 		expect(at("2026-11-22T11:45:00.000Z")).toBeNull();
 	});
 
-	it("fires after three intervals, since the last finished tick", () => {
+	it("fires after three publish intervals, since the last finished tick", () => {
 		expect(at("2026-11-22T11:44:59.999Z")).toStrictEqual({
 			kind: "prober_stale",
 			severity: "critical",
 			corridorId: null,
 			message:
-				"No tick has finished since 2026-11-22T11:44:59.999Z, more than three intervals ago.",
+				"No tick has finished since 2026-11-22T11:44:59.999Z, more than three publish intervals ago.",
 			since: "2026-11-22T11:44:59.999Z",
 		});
 	});

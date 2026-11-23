@@ -78,3 +78,10 @@ Environment for all items: `@atumlabs/payment-gateway-client` 6.0.0, testnet gat
 - Happened: `prepareQuoteRequest` lives in the main entry, which loads ethers, axios, `@solana/web3.js` and jsonld. Under `@cloudflare/vitest-pool-workers` 0.23 the import fails before any call (`The requested module 'ws' does not provide an export named 'WebSocket'`, from ethers).
 - Workaround: Corridor Weather builds the body with its own pure function and checks it against `prepareQuoteRequest` in a Node test, for every corridor in the testnet and mainnet defaults fixtures.
 - Would help: a dependency-free builder entry point, such as `@atumlabs/payment-gateway-client/quote-request`.
+
+## 13. No page says when a batch leaves `collecting`
+
+- Expected: a statement of when `GET /v1/payments/quote-requests/{id}` stops returning `collecting`, relative to the `quote_deadline` the request set. A poller needs it to know when its last poll can go out.
+- Happened: the reference names the statuses and not the moment of the change. In three testnet probes on 2026-11-22 with a 3 second window, a poll answered 213 to 246 ms after the deadline returned `ready`, and the poll before it, about 500 ms earlier, returned `collecting`. Whether the gateway closes the batch at the deadline by its own clock, or later, is not stated.
+- Workaround: the prober sends its last poll 500 ms after the deadline and records a batch still `collecting` as `incomplete`.
+- Would help: one sentence in the quote request reference, such as "the batch is `ready` no later than N ms after `quote_deadline`".
