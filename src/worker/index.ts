@@ -1,20 +1,16 @@
 import { version } from "../../package.json";
 import { createGatewayClient, userAgent } from "../gateway/client";
+import { createWebhookSender } from "../notify/webhook";
 import { createStore } from "../store/store";
-import { parseConfig } from "./config";
+import { runCanary } from "./canary";
+import { type Config, parseConfig } from "./config";
 import { handleRequest } from "./routes";
 import { runTick } from "./tick";
 
-/** Per-call budget for one gateway request. A poll answers in well under a second. */
+/** Per-call budget for one gateway request or one webhook post. A poll answers in well under a second. */
 const REQUEST_TIMEOUT_MS = 10_000;
 
-async function tick(env: Env, scheduledTimeMs: number): Promise<void> {
-	const parsed = parseConfig(env);
-	if (!parsed.ok) {
-		console.error({ event: "config_invalid", errors: parsed.errors });
-		return;
-	}
-	const { config } = parsed;
+async function tick(config: Config, env: Env, scheduledTimeMs: number): Promise<void> {
 	const record = await runTick(
 		{
 			config,
@@ -43,13 +39,47 @@ async function tick(env: Env, scheduledTimeMs: number): Promise<void> {
 	});
 }
 
+async function canary(config: Config, env: Env): Promise<void> {
+	const webhook = config.alertWebhook;
+	return runCanary({
+		config,
+		store: createStore(env.DB),
+		now: () => Date.now(),
+		sender:
+			webhook === null
+				? null
+				: createWebhookSender({
+						url: webhook.url,
+						format: webhook.format,
+						userAgent: userAgent(version, config.repositoryUrl),
+						fetch: (input, init) => fetch(input, init),
+						timeoutMs: REQUEST_TIMEOUT_MS,
+					}),
+	});
+}
+
+/** The canary cron announces alert changes. Every other cron runs a tick. Never rejects. */
+async function scheduled(controller: ScheduledController, env: Env): Promise<void> {
+	const parsed = parseConfig(env);
+	if (!parsed.ok) {
+		console.error({ event: "config_invalid", errors: parsed.errors });
+		return;
+	}
+	const { config } = parsed;
+	if (controller.cron === config.canaryCron) {
+		await canary(config, env).catch((error: unknown) => {
+			console.error({ event: "canary_failed", error: String(error) });
+		});
+		return;
+	}
+	await tick(config, env, controller.scheduledTime).catch((error: unknown) => {
+		console.error({ event: "tick_failed", error: String(error) });
+	});
+}
+
 export default {
 	scheduled(controller, env, ctx) {
-		ctx.waitUntil(
-			tick(env, controller.scheduledTime).catch((error: unknown) => {
-				console.error({ event: "tick_failed", error: String(error) });
-			}),
-		);
+		ctx.waitUntil(scheduled(controller, env));
 	},
 	fetch(request, env) {
 		return handleRequest(request, {

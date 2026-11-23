@@ -8,6 +8,7 @@ import {
 	isIsoTimestamp,
 	namespaceOf,
 } from "../domain/brands";
+import { type AnnouncedAlert, isAlertKey } from "../domain/notify";
 import {
 	type Alert,
 	SNAPSHOT_SCHEMA_VERSION,
@@ -176,9 +177,12 @@ export const tickRowSchema: z.ZodType<SnapshotTick, z.ZodTypeDef, unknown> = z
 /** `MIN(slot_start)` of the current run of failing ticks; null when there is none. */
 export const errorRunRowSchema = z.object({ since: iso.nullable() });
 
+const alertKind = z.enum(["prober_stale", "gateway_errors", "quotes_lost", "slow_quotes"]);
+const alertSeverity = z.enum(["warning", "critical"]);
+
 const alertSchema: z.ZodType<Alert, z.ZodTypeDef, unknown> = z.object({
-	kind: z.enum(["prober_stale", "gateway_errors", "quotes_lost", "slow_quotes"]),
-	severity: z.enum(["warning", "critical"]),
+	kind: alertKind,
+	severity: alertSeverity,
 	corridorId: corridorId.nullable(),
 	message: z.string(),
 	since: iso,
@@ -226,3 +230,21 @@ export const snapshotSchema: z.ZodType<Snapshot, z.ZodTypeDef, unknown> = z.obje
 export const snapshotRowSchema = z.object({ snapshot_json: jsonText(snapshotSchema) });
 
 export const snapshotPartRowSchema = z.object({ snapshot_json: z.string() });
+
+export const announcedAlertRowSchema: z.ZodType<AnnouncedAlert, z.ZodTypeDef, unknown> = z
+	.object({
+		alert_key: z.string().refine(isAlertKey, "not an alert key"),
+		kind: alertKind,
+		severity: alertSeverity,
+		corridor_id: corridorId.nullable(),
+		since: iso,
+		announced_at: iso,
+	})
+	.transform((row) => ({
+		key: row.alert_key,
+		kind: row.kind,
+		severity: row.severity,
+		corridorId: row.corridor_id,
+		since: row.since,
+		announcedAt: row.announced_at,
+	}));

@@ -1,5 +1,6 @@
 import type { TierHistory } from "../domain/alerts";
 import { compareText } from "../domain/brands";
+import { type AnnouncedAlert, alertKeyOf, type NotificationPlan } from "../domain/notify";
 import { readingOf } from "../domain/publish";
 import type { Snapshot, SnapshotTick, TierReading } from "../domain/snapshot";
 import type {
@@ -13,6 +14,7 @@ import type {
 	TickRecord,
 } from "../domain/types";
 import {
+	announcedAlertRowSchema,
 	corridorRowSchema,
 	errorRunRowSchema,
 	probeRowSchema,
@@ -53,6 +55,16 @@ export interface Store {
 		corridorId: CorridorId,
 		since: IsoTimestamp,
 	): Promise<TierReading[]>;
+	/** Alerts announced as raised and not yet announced as cleared. */
+	readAnnouncedAlerts(network: Network): Promise<AnnouncedAlert[]>;
+	/**
+	 * Records a delivered plan in one batch: inserts the raised alerts, keeping a
+	 * row that already exists, and deletes the cleared ones.
+	 */
+	applyAnnouncements(
+		network: Network,
+		announcements: NotificationPlan & { readonly announcedAt: IsoTimestamp },
+	): Promise<void>;
 }
 
 /** Each bound JSON parameter stays well under D1's 2 MB value limit. */
@@ -125,6 +137,16 @@ const PROBE_COLUMNS = [
 	"error_http_status",
 	"error_code",
 	"error_message",
+] as const;
+
+const ANNOUNCED_COLUMNS = [
+	"network",
+	"alert_key",
+	"kind",
+	"severity",
+	"corridor_id",
+	"since",
+	"announced_at",
 ] as const;
 
 const DECLINE_COLUMNS = ["probe_id", "ordinal", "reason", "retry_classification", "count"] as const;
@@ -455,6 +477,38 @@ export function createStore(db: D1Database): Store {
 				.bind(network, corridorId, since)
 				.all();
 			return results.map((row) => probeRowSchema.parse(row).reading);
+		},
+
+		async readAnnouncedAlerts(network) {
+			const { results } = await db
+				.prepare("SELECT * FROM alert_notifications WHERE network = ?1 ORDER BY alert_key")
+				.bind(network)
+				.all();
+			return results.map((row) => announcedAlertRowSchema.parse(row));
+		},
+
+		async applyAnnouncements(network, { raised, cleared, announcedAt }) {
+			await db.batch([
+				...bulkInsert(db, {
+					table: "alert_notifications",
+					columns: ANNOUNCED_COLUMNS,
+					conflict: ["network", "alert_key"],
+					rows: raised.map((alert) => ({
+						network,
+						alert_key: alertKeyOf(alert),
+						kind: alert.kind,
+						severity: alert.severity,
+						corridor_id: alert.corridorId,
+						since: alert.since,
+						announced_at: announcedAt,
+					})),
+				}),
+				db
+					.prepare(
+						"DELETE FROM alert_notifications WHERE network = ?1 AND alert_key IN (SELECT value FROM json_each(?2))",
+					)
+					.bind(network, JSON.stringify(cleared.map((alert) => alert.key))),
+			]);
 		},
 	};
 }

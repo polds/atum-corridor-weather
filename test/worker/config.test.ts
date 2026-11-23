@@ -22,6 +22,10 @@ describe("parseConfig", () => {
 			slowQuoteMs: 2500,
 			corridorFilter: null,
 			rawRetentionDays: 14,
+			canaryCron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *",
+			alertWebhook: null,
+			alertMinSeverity: "critical",
+			publicUrl: null,
 		});
 	});
 
@@ -121,5 +125,88 @@ describe("parseConfig", () => {
 			ok: true,
 			config: { rawRetentionDays: 0 },
 		});
+	});
+	it("requires the canary cron", () => {
+		for (const bad of [{ CANARY_CRON: "" }, { CANARY_CRON: undefined }]) {
+			expect(parse(bad)).toMatchObject({
+				ok: false,
+				errors: [expect.stringMatching(/^CANARY_CRON: /)],
+			});
+		}
+	});
+
+	it("accepts an https webhook, or http on a loopback host, with a format", () => {
+		expect(parse({ ALERT_WEBHOOK_URL: "https://hooks.example.test/T0/B0/x" })).toMatchObject({
+			ok: true,
+			config: { alertWebhook: { url: "https://hooks.example.test/T0/B0/x", format: "slack" } },
+		});
+		expect(
+			parse({ ALERT_WEBHOOK_URL: "http://127.0.0.1:9000/hook", ALERT_WEBHOOK_FORMAT: "json" }),
+		).toMatchObject({
+			ok: true,
+			config: { alertWebhook: { url: "http://127.0.0.1:9000/hook", format: "json" } },
+		});
+		for (const loopback of ["http://localhost:9000/hook", "http://[::1]:9000/hook"]) {
+			expect(parse({ ALERT_WEBHOOK_URL: loopback }).ok).toBe(true);
+		}
+		expect(parse({ ALERT_WEBHOOK_URL: "" })).toMatchObject({
+			ok: true,
+			config: { alertWebhook: null },
+		});
+		expect(parse({ ALERT_WEBHOOK_FORMAT: "teams" }).ok).toBe(false);
+	});
+
+	it("rejects any other webhook URL without quoting it", () => {
+		for (const bad of [
+			"http://hooks.example.test/secret-token",
+			"ftp://hooks.example.test/secret-token",
+			"http://127.0.0.2/secret-token",
+			"secret-token",
+		]) {
+			const result = parse({ ALERT_WEBHOOK_URL: bad });
+			expect(result).toMatchObject({
+				ok: false,
+				errors: [expect.stringMatching(/^ALERT_WEBHOOK_URL: /)],
+			});
+			expect(JSON.stringify(result)).not.toContain("secret-token");
+		}
+	});
+
+	it("reads the minimum severity", () => {
+		expect(parse({ ALERT_MIN_SEVERITY: "warning" })).toMatchObject({
+			ok: true,
+			config: { alertMinSeverity: "warning" },
+		});
+		expect(parse({ ALERT_MIN_SEVERITY: undefined })).toMatchObject({
+			ok: true,
+			config: { alertMinSeverity: "critical" },
+		});
+		expect(parse({ ALERT_MIN_SEVERITY: "info" }).ok).toBe(false);
+	});
+
+	it("keeps the public URL as origin and path with no trailing slash", () => {
+		for (const [value, expected] of [
+			["https://weather.example", "https://weather.example"],
+			["https://weather.example/", "https://weather.example"],
+			["https://weather.example/cw//", "https://weather.example/cw"],
+			["http://127.0.0.1:8787/", "http://127.0.0.1:8787"],
+			["", null],
+		] as const) {
+			expect(parse({ PUBLIC_URL: value })).toMatchObject({
+				ok: true,
+				config: { publicUrl: expected },
+			});
+		}
+		for (const bad of [
+			"http://weather.example",
+			"https://weather.example/?a=1",
+			"https://weather.example/#top",
+			"not a url",
+		]) {
+			expect(parse({ PUBLIC_URL: bad })).toMatchObject({
+				ok: false,
+				errors: [expect.stringMatching(/^PUBLIC_URL: /)],
+			});
+		}
 	});
 });
