@@ -79,20 +79,28 @@ function byPriority(a: Ordered, b: Ordered): number {
 	);
 }
 
+/**
+ * `raised`: alerts at or above `minSeverity` not yet announced, one per key.
+ * `cleared`: announced alerts whose key no current alert has, whatever its
+ * severity, so raising `minSeverity` never announces an active alert as cleared.
+ */
 export function planNotifications(params: {
 	readonly current: readonly Alert[];
 	readonly announced: readonly AnnouncedAlert[];
 	readonly minSeverity: AlertSeverity;
 }): NotificationPlan {
 	const min = SEVERITY_RANK[params.minSeverity];
-	const active = new Map<AlertKey, Alert>();
+	const active = new Set(params.current.map(alertKeyOf));
+	const announced = new Set(params.announced.map((alert) => alert.key));
+	const raised = new Map<AlertKey, Alert>();
 	for (const alert of [...params.current].sort(byPriority)) {
 		const key = alertKeyOf(alert);
-		if (SEVERITY_RANK[alert.severity] >= min && !active.has(key)) active.set(key, alert);
+		if (SEVERITY_RANK[alert.severity] >= min && !announced.has(key) && !raised.has(key)) {
+			raised.set(key, alert);
+		}
 	}
-	const announced = new Set(params.announced.map((alert) => alert.key));
 	return {
-		raised: [...active].flatMap(([key, alert]) => (announced.has(key) ? [] : [alert])),
+		raised: [...raised.values()],
 		cleared: params.announced.filter((alert) => !active.has(alert.key)).sort(byPriority),
 	};
 }
@@ -101,13 +109,18 @@ export function isEmptyPlan(plan: NotificationPlan): boolean {
 	return plan.raised.length === 0 && plan.cleared.length === 0;
 }
 
-function section(title: string, lines: readonly string[]): string[] {
+/** A section of at most `MAX_SECTION_LINES` lines. A cut section ends with `tail`, which names how many lines it left out. */
+function section(
+	title: string,
+	lines: readonly string[],
+	tail: (more: number) => string,
+): string[] {
 	if (lines.length === 0) return [];
 	const more = lines.length - MAX_SECTION_LINES;
 	return [
 		`${title} (${lines.length})`,
 		...lines.slice(0, MAX_SECTION_LINES),
-		...(more > 0 ? [`and ${more} more`] : []),
+		...(more > 0 ? [tail(more)] : []),
 	];
 }
 
@@ -120,6 +133,12 @@ export function renderMessage(params: {
 	readonly publicUrl: string | null;
 }): AlertMessage {
 	const { plan, network, publicUrl } = params;
+	// The health report lists every active alert, so it holds the raised alerts
+	// a cut section left out. It holds no cleared alert.
+	const health =
+		publicUrl === null
+			? "listed in the health report at /api/v1/health"
+			: `listed at ${publicUrl}/api/v1/health`;
 	const text = [
 		`Corridor Weather on ${network}. An unofficial open-source project, not an Atum product.`,
 		...section(
@@ -128,6 +147,7 @@ export function renderMessage(params: {
 				(alert) =>
 					`[${alert.severity}] ${alert.kind}: ${alert.corridorId === null ? "" : `${alert.corridorId}: `}${alert.message} (since ${alert.since})`,
 			),
+			(more) => `and ${more} more, ${health}`,
 		),
 		...section(
 			"Cleared",
@@ -135,6 +155,7 @@ export function renderMessage(params: {
 				(alert) =>
 					`[${alert.severity}] ${alert.kind}: ${alert.corridorId ?? "network-wide"} (since ${alert.since})`,
 			),
+			(more) => `and ${more} more`,
 		),
 		...(publicUrl === null
 			? []

@@ -12,13 +12,16 @@ function wranglerConfig(): { triggers?: { crons?: string[] }; vars?: Record<stri
 }
 
 describe("wrangler.jsonc Cron Triggers", () => {
-	it("names the canary cron exactly as one trigger, beside exactly one probe cron", () => {
+	it("are exactly the probe cron and the canary cron, two different expressions", () => {
 		const config = wranglerConfig();
 		const crons = config.triggers?.crons ?? [];
+		const probe = config.vars?.PROBE_CRON;
 		const canary = config.vars?.CANARY_CRON;
-		// scheduled() compares controller.cron with CANARY_CRON character for character.
-		expect(crons).toContain(canary);
-		expect(crons.filter((cron) => cron !== canary)).toHaveLength(1);
-		expect(crons).toHaveLength(2);
+		// scheduled() compares controller.cron with both, character for character, and
+		// ignores any other trigger.
+		expect(probe).toEqual(expect.any(String));
+		expect(canary).toEqual(expect.any(String));
+		expect(probe).not.toBe(canary);
+		expect([...crons].sort()).toStrictEqual([probe, canary].sort());
 	});
 });

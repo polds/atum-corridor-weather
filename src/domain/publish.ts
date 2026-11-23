@@ -1,4 +1,4 @@
-import { alertsFor, staleAlert, type TierHistory } from "./alerts";
+import { alertsFor, type LastQuote, staleAlert, type TierLatest } from "./alerts";
 import { compareText, isoAt } from "./brands";
 import { chainLabel } from "./chains";
 import { conditionOf } from "./conditions";
@@ -81,7 +81,8 @@ export interface SnapshotInput {
 	readonly tierAmounts: TierAmounts;
 	/** The corridors of the latest successful discovery. */
 	readonly corridors: readonly Corridor[];
-	readonly tiers: readonly TierHistory[];
+	readonly tiers: readonly TierLatest[];
+	readonly lastQuotes: readonly LastQuote[];
 	readonly lastTick: SnapshotTick | null;
 	/** Slot start of the current run of failing ticks, or null. See `AlertInput`. */
 	readonly errorRunStart: IsoTimestamp | null;
@@ -110,10 +111,10 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
 		assets.set(corridor.destination.id, snapshotAsset(corridor.destination));
 	}
 	const latestByCorridor = new Map<CorridorId, TierReading[]>();
-	for (const history of input.tiers) {
-		const readings = latestByCorridor.get(history.corridorId) ?? [];
-		readings.push(history.latest);
-		latestByCorridor.set(history.corridorId, readings);
+	for (const { corridorId, latest } of input.tiers) {
+		const readings = latestByCorridor.get(corridorId) ?? [];
+		readings.push(latest);
+		latestByCorridor.set(corridorId, readings);
 	}
 	const corridors = [...input.corridors]
 		.sort((a, b) => compareText(a.id, b.id))
@@ -160,6 +161,7 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
 			lastTick,
 			errorRunStart: input.errorRunStart,
 			tiers: input.tiers,
+			lastQuotes: input.lastQuotes,
 		}),
 	};
 }

@@ -1,5 +1,6 @@
 /** Schemas for what the store reads back from D1. */
 import { z } from "zod";
+import type { LastQuote } from "../domain/alerts";
 import {
 	isAssetId,
 	isAtomicAmount,
@@ -78,7 +79,6 @@ const readingSchema: z.ZodType<TierReading, z.ZodTypeDef, unknown> = z.object({
 export const probeRowSchema = z
 	.object({
 		corridor_id: corridorId,
-		slot_start: iso,
 		tier,
 		fulfillment_amount: atomic,
 		started_at: iso,
@@ -95,7 +95,6 @@ export const probeRowSchema = z
 	})
 	.transform((row) => ({
 		corridorId: row.corridor_id,
-		slotStart: row.slot_start,
 		reading: {
 			tier: row.tier,
 			fulfillmentAmount: row.fulfillment_amount,
@@ -172,6 +171,15 @@ export const tickRowSchema: z.ZodType<SnapshotTick, z.ZodTypeDef, unknown> = z
 		completed: row.completed,
 		gatewayErrors: row.gateway_errors,
 		aborted: row.aborted_reason,
+	}));
+
+/** The last quote of a corridor at a configured tier, and the first probe after it. */
+export const lastQuoteRowSchema: z.ZodType<LastQuote, z.ZodTypeDef, unknown> = z
+	.object({ corridor_id: corridorId, quoted_at: iso, first_unquoted_at: iso.nullable() })
+	.transform((row) => ({
+		corridorId: row.corridor_id,
+		quotedAt: row.quoted_at,
+		firstUnquotedAt: row.first_unquoted_at,
 	}));
 
 /** `MIN(slot_start)` of the current run of failing ticks; null when there is none. */

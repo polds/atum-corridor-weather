@@ -58,7 +58,11 @@ async function canary(config: Config, env: Env): Promise<void> {
 	});
 }
 
-/** The canary cron announces alert changes. Every other cron runs a tick. Never rejects. */
+/**
+ * The probe cron runs a tick and the canary cron announces alert changes. Any
+ * other cron does nothing, so a mistyped variable cannot add probe traffic.
+ * Never rejects.
+ */
 async function scheduled(controller: ScheduledController, env: Env): Promise<void> {
 	const parsed = parseConfig(env);
 	if (!parsed.ok) {
@@ -66,15 +70,20 @@ async function scheduled(controller: ScheduledController, env: Env): Promise<voi
 		return;
 	}
 	const { config } = parsed;
-	if (controller.cron === config.canaryCron) {
-		await canary(config, env).catch((error: unknown) => {
-			console.error({ event: "canary_failed", error: String(error) });
-		});
-		return;
+	switch (controller.cron) {
+		case config.probeCron:
+			await tick(config, env, controller.scheduledTime).catch((error: unknown) => {
+				console.error({ event: "tick_failed", error: String(error) });
+			});
+			return;
+		case config.canaryCron:
+			await canary(config, env).catch((error: unknown) => {
+				console.error({ event: "canary_failed", error: String(error) });
+			});
+			return;
+		default:
+			console.error({ event: "unknown_cron", cron: controller.cron });
 	}
-	await tick(config, env, controller.scheduledTime).catch((error: unknown) => {
-		console.error({ event: "tick_failed", error: String(error) });
-	});
 }
 
 export default {

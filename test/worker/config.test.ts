@@ -22,6 +22,7 @@ describe("parseConfig", () => {
 			slowQuoteMs: 2500,
 			corridorFilter: null,
 			rawRetentionDays: 14,
+			probeCron: "*/5 * * * *",
 			canaryCron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *",
 			alertWebhook: null,
 			alertMinSeverity: "critical",
@@ -126,12 +127,47 @@ describe("parseConfig", () => {
 			config: { rawRetentionDays: 0 },
 		});
 	});
-	it("requires the canary cron", () => {
-		for (const bad of [{ CANARY_CRON: "" }, { CANARY_CRON: undefined }]) {
-			expect(parse(bad)).toMatchObject({
-				ok: false,
-				errors: [expect.stringMatching(/^CANARY_CRON: /)],
-			});
+	it("requires both crons as five fields joined by single spaces", () => {
+		for (const name of ["PROBE_CRON", "CANARY_CRON"]) {
+			const deployed = String(env[name as keyof typeof env]);
+			for (const bad of [
+				"",
+				undefined,
+				`${deployed} `,
+				` ${deployed}`,
+				deployed.replace(" ", "  "),
+				deployed.replace(" ", "\t"),
+				"nonsense",
+				"* * * *",
+				"0 * * * * *",
+			]) {
+				expect(parse({ [name]: bad }), JSON.stringify(bad)).toMatchObject({
+					ok: false,
+					errors: [expect.stringMatching(new RegExp(`^${name}: `))],
+				});
+			}
+		}
+		expect(parse({ PROBE_CRON: "*/10 * * * *", CANARY_CRON: "1-59/10 * * * *" })).toMatchObject({
+			ok: true,
+			config: { probeCron: "*/10 * * * *", canaryCron: "1-59/10 * * * *" },
+		});
+	});
+
+	it("refuses one expression for both crons", () => {
+		expect(parse({ CANARY_CRON: "*/5 * * * *" })).toMatchObject({
+			ok: false,
+			errors: [expect.stringMatching(/^CANARY_CRON: /)],
+		});
+	});
+
+	it("names the variable and the allowed values for a bad choice, never the value", () => {
+		const secret = "https://hooks.example.test/services/T0/B0/secret-token";
+		for (const [name, allowed] of [
+			["ALERT_WEBHOOK_FORMAT", "slack or json"],
+			["ALERT_MIN_SEVERITY", "critical or warning"],
+		] as const) {
+			const result = parse({ [name]: secret });
+			expect(result).toStrictEqual({ ok: false, errors: [`${name}: must be ${allowed}`] });
 		}
 	});
 

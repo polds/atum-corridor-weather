@@ -18,12 +18,11 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-const PROBE_CRON = "*/5 * * * *";
 const HOOK = "http://127.0.0.1:9999/hook";
 
 async function runScheduled(
 	overrides: Readonly<Record<string, unknown>>,
-	cron = PROBE_CRON,
+	cron = env.PROBE_CRON,
 ): Promise<Request[]> {
 	const sent: Request[] = [];
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -80,11 +79,35 @@ describe("scheduled handler", () => {
 		expect(await env.DB.prepare("SELECT count(*) AS n FROM ticks").first("n")).toBe(0);
 	});
 
-	it("runs a tick, not the canary, on any other cron", async () => {
+	it("runs a tick, not the canary, on the probe cron", async () => {
 		vi.spyOn(console, "info").mockImplementation(() => {});
 		const sent = await runScheduled({ ...ONE_TARGET, ALERT_WEBHOOK_URL: HOOK });
 		expect(sent.some((request) => request.url === HOOK)).toBe(false);
 		expect(await env.DB.prepare("SELECT count(*) AS n FROM ticks").first("n")).toBe(1);
+	});
+
+	it("does nothing on a cron that matches neither variable, and logs it", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const sent = await runScheduled({ ...ONE_TARGET, ALERT_WEBHOOK_URL: HOOK }, "0 0 * * *");
+		expect(sent).toStrictEqual([]);
+		expect(error).toHaveBeenCalledWith({ event: "unknown_cron", cron: "0 0 * * *" });
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM ticks").first("n")).toBe(0);
+	});
+
+	it.each([
+		["a trailing space", `${env.CANARY_CRON} `],
+		["a double space", env.CANARY_CRON.replace(" ", "  ")],
+		["nonsense", "nonsense"],
+	])("sends no gateway request on the canary trigger when CANARY_CRON has %s", async (_, bad) => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(console, "info").mockImplementation(() => {});
+		const sent = await runScheduled(
+			{ ...ONE_TARGET, ALERT_WEBHOOK_URL: HOOK, CANARY_CRON: bad },
+			env.CANARY_CRON,
+		);
+		expect(sent).toStrictEqual([]);
+		expect(error).toHaveBeenCalledWith(expect.objectContaining({ event: "config_invalid" }));
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM ticks").first("n")).toBe(0);
 	});
 
 	it("logs a canary that throws instead of rejecting", async () => {

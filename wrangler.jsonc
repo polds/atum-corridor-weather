@@ -6,7 +6,8 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 	// The probe cron runs a tick. The canary cron, two minutes later, announces alert
-	// changes. scheduled() tells them apart by CANARY_CRON, so keep the two equal.
+	// changes. scheduled() tells them apart by PROBE_CRON and CANARY_CRON and ignores
+	// any other trigger, so keep these two entries equal to those two vars.
 	"triggers": { "crons": ["*/5 * * * *", "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"] },
 	"assets": {
 		"directory": "dist/dashboard",
@@ -36,6 +37,7 @@
 		"CORRIDOR_FILTER": "",
 		"MAINNET_ACK": "",
 		"REPOSITORY_URL": "https://github.com/polds/atum-corridor-weather",
+		"PROBE_CRON": "*/5 * * * *",
 		"CANARY_CRON": "2,7,12,17,22,27,32,37,42,47,52,57 * * * *",
 		// ALERT_WEBHOOK_URL is a secret: `wrangler secret put ALERT_WEBHOOK_URL`.
 		"ALERT_WEBHOOK_FORMAT": "slack",

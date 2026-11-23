@@ -60,7 +60,9 @@ export interface Config {
 	readonly corridorFilter: RegExp | null;
 	/** Days `probe_raw` keeps a probe. 0 keeps every probe. */
 	readonly rawRetentionDays: number;
-	/** `controller.cron` of the canary Cron Trigger, character for character. */
+	/** `controller.cron` of the probe Cron Trigger, character for character. */
+	readonly probeCron: string;
+	/** `controller.cron` of the canary Cron Trigger, character for character. Not `probeCron`. */
 	readonly canaryCron: string;
 	/** Null when `ALERT_WEBHOOK_URL` is unset: the canary only logs. */
 	readonly alertWebhook: AlertWebhook | null;
@@ -80,6 +82,25 @@ function integer(min: number, max: number) {
 		.transform(Number)
 		.pipe(z.number().int().min(min).max(max));
 }
+
+/**
+ * One of `values`. The message names the allowed values and never quotes the
+ * value: a secret pasted into the wrong variable must not reach the published errors.
+ */
+function oneOf<const T extends readonly [string, ...string[]]>(values: T) {
+	return z.enum(values, {
+		errorMap: () => ({ message: `must be ${values.join(" or ")}` }),
+	});
+}
+
+/**
+ * A cron expression as Cloudflare passes it in `controller.cron`: five fields of
+ * no whitespace, joined by single spaces. `scheduled()` compares it character
+ * for character, so a stray space would match no trigger.
+ */
+const cron = z
+	.string({ required_error: "must name a Cron Trigger in wrangler.jsonc" })
+	.regex(/^\S+( \S+){4}$/, "must be five cron fields joined by single spaces");
 
 const httpUrl = z
 	.string()
@@ -153,12 +174,12 @@ const publicUrl = optionalUrl.transform((value, context): string | null => {
 
 const envSchema = z
 	.object({
-		NETWORK: z.enum(["testnet", "mainnet"]),
+		NETWORK: oneOf(["testnet", "mainnet"]),
 		MAINNET_ACK: z.string().default(""),
 		// Checked against NETWORK below.
 		GATEWAY_URL: z.string(),
 		REPOSITORY_URL: httpUrl,
-		PROBE_ENABLED: z.enum(["true", "false"]).transform((value) => value === "true"),
+		PROBE_ENABLED: oneOf(["true", "false"]).transform((value) => value === "true"),
 		TICK_INTERVAL_MINUTES: integer(1, 1440),
 		PROBES_PER_TICK: integer(1, 200),
 		AMOUNT_TIERS: tierAmounts,
@@ -167,10 +188,11 @@ const envSchema = z
 		SLOW_QUOTE_MS: integer(0, 600_000),
 		CORRIDOR_FILTER: corridorFilter,
 		RAW_RETENTION_DAYS: integer(0, 3650).default("14"),
-		CANARY_CRON: z.string().min(1, "must name the canary Cron Trigger"),
+		PROBE_CRON: cron,
+		CANARY_CRON: cron,
 		ALERT_WEBHOOK_URL: alertWebhookUrl,
-		ALERT_WEBHOOK_FORMAT: z.enum(["slack", "json"]).default("slack"),
-		ALERT_MIN_SEVERITY: z.enum(["critical", "warning"]).default("critical"),
+		ALERT_WEBHOOK_FORMAT: oneOf(["slack", "json"]).default("slack"),
+		ALERT_MIN_SEVERITY: oneOf(["critical", "warning"]).default("critical"),
 		PUBLIC_URL: publicUrl,
 	})
 	.superRefine((env, context) => {
@@ -179,6 +201,13 @@ const envSchema = z
 				code: z.ZodIssueCode.custom,
 				path: ["GATEWAY_URL"],
 				message: `NETWORK=${env.NETWORK} needs GATEWAY_URL=${GATEWAY_ORIGINS[env.NETWORK]}, or a loopback origin such as http://127.0.0.1:8789 for a local gateway`,
+			});
+		}
+		if (env.PROBE_CRON === env.CANARY_CRON) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["CANARY_CRON"],
+				message: "must differ from PROBE_CRON, or every canary run would also be a tick",
 			});
 		}
 		if (env.NETWORK === "mainnet" && env.MAINNET_ACK !== MAINNET_ACK) {
@@ -215,6 +244,7 @@ export function parseConfig(env: unknown): ConfigResult {
 			slowQuoteMs: value.SLOW_QUOTE_MS,
 			corridorFilter: value.CORRIDOR_FILTER,
 			rawRetentionDays: value.RAW_RETENTION_DAYS,
+			probeCron: value.PROBE_CRON,
 			canaryCron: value.CANARY_CRON,
 			alertWebhook:
 				value.ALERT_WEBHOOK_URL === null

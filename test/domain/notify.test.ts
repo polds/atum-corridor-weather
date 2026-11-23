@@ -88,14 +88,20 @@ describe("planNotifications", () => {
 		).toStrictEqual([slow]);
 	});
 
-	it("clears an announced alert whose severity is now below the minimum", () => {
-		const critical = alert("quotes_lost");
+	it("keeps an announced alert that is still active below the minimum, and silent", () => {
+		const slow = alert("slow_quotes");
 		const plan = planNotifications({
-			current: [{ ...critical, severity: "warning" }],
-			announced: [announced(critical)],
+			current: [slow],
+			announced: [announced(slow)],
 			minSeverity: "critical",
 		});
-		expect(plan).toStrictEqual({ raised: [], cleared: [announced(critical)] });
+		expect(plan).toStrictEqual({ raised: [], cleared: [] });
+		const gone = planNotifications({
+			current: [],
+			announced: [announced(slow)],
+			minSeverity: "critical",
+		});
+		expect(gone).toStrictEqual({ raised: [], cleared: [announced(slow)] });
 	});
 
 	it("raises one alert per key when several tiers of a corridor fire", () => {
@@ -194,11 +200,39 @@ describe("renderMessage", () => {
 			cleared: many(10).map((row) => announced(row)),
 		}).text.split("\n");
 		expect(lines.filter((line) => line.startsWith("[critical]"))).toHaveLength(20);
+		const more = "and 3 more, listed in the health report at /api/v1/health";
 		expect(lines).toContain("Raised (13)");
-		expect(lines).toContain("and 3 more");
 		expect(lines).toContain("Cleared (10)");
-		expect(lines.filter((line) => line.startsWith("and "))).toStrictEqual(["and 3 more"]);
-		expect(lines.indexOf("and 3 more")).toBe(lines.indexOf("Raised (13)") + 11);
+		expect(lines.filter((line) => line.startsWith("and "))).toStrictEqual([more]);
+		expect(lines.indexOf(more)).toBe(lines.indexOf("Raised (13)") + 11);
+	});
+
+	it("points a cut section at the health report under the public URL when one is set", () => {
+		const many = Array.from({ length: 23 }, (_, index) =>
+			alert("quotes_lost", {
+				since: iso(`2026-11-22T10:${String(index).padStart(2, "0")}:00.000Z`),
+			}),
+		);
+		const cut = (publicUrl: string | null) =>
+			render({ raised: many, cleared: [] }, publicUrl)
+				.text.split("\n")
+				.filter((line) => line.startsWith("and "));
+		expect(cut("https://weather.example/cw")).toStrictEqual([
+			"and 13 more, listed at https://weather.example/cw/api/v1/health",
+		]);
+		expect(cut(null)).toStrictEqual(["and 13 more, listed in the health report at /api/v1/health"]);
+	});
+
+	it("does not point a cut cleared section at the health report, which lists active alerts only", () => {
+		const many = Array.from({ length: 23 }, (_, index) =>
+			announced(
+				alert("quotes_lost", {
+					since: iso(`2026-11-22T10:${String(index).padStart(2, "0")}:00.000Z`),
+				}),
+			),
+		);
+		const lines = render({ raised: [], cleared: many }, "https://weather.example").text.split("\n");
+		expect(lines.filter((line) => line.startsWith("and "))).toStrictEqual(["and 13 more"]);
 	});
 
 	it("links the dashboard and the health check only when a public URL is set", () => {

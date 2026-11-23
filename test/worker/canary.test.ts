@@ -66,7 +66,9 @@ describe("canary", () => {
 		const [text = ""] = raised;
 		expect(text).toMatch(/^Corridor Weather on testnet\. An unofficial open-source project/);
 		expect(text).toContain("Raised (1)");
-		expect(text).toContain(`[critical] quotes_lost: ${ARB_TO_BASE_USDC}: The small tier`);
+		expect(text).toContain(
+			`[critical] quotes_lost: ${ARB_TO_BASE_USDC}: No tier is quoted now. The last quote was at `,
+		);
 		expect(text).not.toContain("Cleared");
 		expect(text.toLowerCase()).not.toContain(QUOTED_SETTLER.slice(2));
 		expect(await announcedKeys()).toStrictEqual([`quotes_lost|${ARB_TO_BASE_USDC}`]);
@@ -80,6 +82,33 @@ describe("canary", () => {
 		expect(cleared[0]).not.toContain("Raised");
 		expect(await announcedKeys()).toStrictEqual([]);
 		expect(await canary()).toStrictEqual([]);
+	});
+
+	it("keeps quotes_lost, health at 503 and the same since while the corridor stays unquoted", async () => {
+		vi.spyOn(console, "info").mockImplementation(() => {});
+		const health = async () => {
+			const response = await worker.fetch(
+				new Request("https://corridor-weather.test/api/v1/health"),
+				env,
+			);
+			const body: { alerts: { kind: string; since: string }[] } = await response.json();
+			return { status: response.status, lost: body.alerts.filter((a) => a.kind === "quotes_lost") };
+		};
+		await tickAt(3, () => fixtures.quoted);
+		await tickAt(2, () => fixtures.declinedLiquidity);
+		expect(await canary()).toHaveLength(1);
+		const first = await health();
+		expect(first.status).toBe(503);
+		expect(first.lost).toHaveLength(1);
+
+		await tickAt(1, () => fixtures.declinedLiquidity);
+		expect(await canary()).toStrictEqual([]);
+		expect(await health()).toStrictEqual(first);
+		expect(await announcedKeys()).toStrictEqual([`quotes_lost|${ARB_TO_BASE_USDC}`]);
+
+		await tickAt(0, () => fixtures.quoted);
+		const [cleared = ""] = await canary();
+		expect(cleared).toContain(`Cleared (1)\n[critical] quotes_lost: ${ARB_TO_BASE_USDC}`);
 	});
 
 	it("sends the same raised message again after a failed delivery, and only then records it", async () => {
