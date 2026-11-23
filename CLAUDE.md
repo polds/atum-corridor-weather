@@ -8,6 +8,7 @@ Read `docs/DESIGN.md` before you change behavior. It holds the design, the safet
 
 - Never send `sender_auth`. Never call an award or payment endpoint. Never add a key or a secret that can spend.
 - The gateway client allows three routes. Do not add a fourth without changing `docs/DESIGN.md` first.
+- The Worker has two outbound destinations: the gateway, and the alert webhook in `src/notify/`. Do not add a third without changing `docs/DESIGN.md` first.
 - Do not import `@atumlabs/payment-gateway-client` under `src/`. The Worker builds quote request bodies itself in `src/gateway/quote-request.ts`. The SDK (6.0.0 or later) is a dev dependency, and the conformance test requires the two bodies to be equal. Change the builder and that test together.
 - Testnet only. `NETWORK=mainnet` needs `MAINNET_ACK` and a human decision (DESIGN.md, questions 1 and 4).
 - Do not send quote requests to the real gateway from tests or CI. Tests use the fixtures in `test/fixtures/gateway`.
@@ -18,7 +19,7 @@ Read `docs/DESIGN.md` before you change behavior. It holds the design, the safet
 ```bash
 pnpm install
 pnpm run check        # lint, typecheck, test, build. Run before every commit.
-pnpm run dev          # local Worker with a local D1. Trigger a tick: curl "http://localhost:8787/__scheduled?cron=*/5+*+*+*+*"
+pnpm run dev          # local Worker with a local D1. Trigger a tick: curl "http://localhost:8787/__scheduled?cron=*/30+*+*+*+*"
 pnpm run lint:fix
 ```
 
@@ -29,6 +30,7 @@ Use pnpm. `npm install` fails on this dependency tree.
 - `src/domain/` is pure. No I/O, no clock, no globals. Pass time and randomness in.
 - `src/gateway/` and `src/worker/config.ts` are the only places that parse external data. Use zod there and trust the types everywhere else.
 - `src/store/` is the only code that talks to D1.
+- `src/notify/` is the only code that posts to the alert webhook. The webhook URL is a secret: log its origin only.
 - `dashboard/` imports types from `src/domain/snapshot.ts` and nothing else from `src/`.
 
 ## Agent tooling

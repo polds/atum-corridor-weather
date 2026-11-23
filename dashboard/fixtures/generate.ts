@@ -236,9 +236,10 @@ const PAIRS: readonly Pair[] = ASSETS.flatMap((source) =>
 
 const SWEEP_MS = Math.ceil((PAIRS.length * TIERS.length) / PROBES_PER_TICK) * TICK_MINUTES * 60_000;
 
-/** The corridor whose history shows quotes being lost in the last half day. */
+/** The corridor that lost its quotes at every tier in the last half day: `quotes_lost`. */
 export const QUOTES_LOST_CORRIDOR = pairId("Arbitrum Sepolia", "USDC", "Base Sepolia", "USDC");
 const SLOW_CORRIDOR = pairId("Ethereum Sepolia", "PYUSD", "OP Sepolia", "USDT");
+/** Lost only its large tier: cloudy, and no alert, because the other tiers still quote. */
 const LOST_LARGE_CORRIDOR = pairId("OP Sepolia", "USDT", "Avalanche Fuji", "USDC");
 
 function pairId(
@@ -337,7 +338,7 @@ function probe(p: Pair, tierIndex: number, at: number, now: number): Probe {
 
 	const profile = profileOf(p);
 	const lostRecently =
-		(p.id === QUOTES_LOST_CORRIDOR && tier !== "small" && at > now - 11 * HOUR) ||
+		(p.id === QUOTES_LOST_CORRIDOR && at > now - 11 * HOUR) ||
 		(p.id === LOST_LARGE_CORRIDOR && tier === "large" && at > now - 6 * HOUR);
 	let quoted: boolean;
 	switch (profile) {
@@ -503,21 +504,25 @@ export function buildSnapshot(nowMs: number, mode: FixtureMode = "normal"): Snap
 		};
 	});
 
+	// quotes_lost as the Worker computes it: the last quote at any tier, and the first probe after it.
+	const lostPair = PAIRS.find((x) => x.id === QUOTES_LOST_CORRIDOR);
+	const lostProbes = TIERS.flatMap((_, ti) =>
+		lostPair === undefined
+			? []
+			: probeTimes(lostPair, ti, now - 7 * DAY, now).map((t) => ({
+					at: t,
+					quoted: probe(lostPair, ti, t, now).outcome === "quoted",
+				})),
+	).sort((a, b) => a.at - b.at);
+	const lastQuoteAt = lostProbes.filter((x) => x.quoted).at(-1)?.at ?? now - 7 * DAY;
+	const lostSince = lostProbes.find((x) => x.at > lastQuoteAt)?.at ?? lastQuoteAt;
 	const alerts: Alert[] = [
 		{
 			kind: "quotes_lost",
 			severity: "critical",
 			corridorId: QUOTES_LOST_CORRIDOR,
-			message:
-				"The typical and large tiers were quoted on their previous probe and are not quoted now.",
-			since: iso(now - 10 * HOUR),
-		},
-		{
-			kind: "quotes_lost",
-			severity: "critical",
-			corridorId: LOST_LARGE_CORRIDOR,
-			message: "The large tier was quoted on its previous probe and is not quoted now.",
-			since: iso(now - 5 * HOUR),
+			message: `No tier is quoted now. The last quote was at ${iso(lastQuoteAt)}.`,
+			since: iso(lostSince),
 		},
 		{
 			kind: "slow_quotes",

@@ -33,7 +33,7 @@ The design removes the ability to spend. It does not rely on care.
 - The gateway client has three operations: read defaults, create a quote request, and read a quote request. It refuses every other path before it sends anything, and it never follows a redirect. There is no award call.
 - The quote request body has no `sender_auth` field. The builder's return type cannot hold one, and tests check the output.
 - The probe accounts have no private key. Each address is derived from the hash of the public label `corridor-weather-probe/v1`, so no key for it exists. Run `pnpm run probe-identity` to reproduce the addresses.
-- The Worker holds no secret. Its bindings are one D1 database and the static assets.
+- The Worker holds no secret that can sign or spend. Its bindings are one D1 database and the static assets. The one optional secret is the URL of the alert webhook.
 
 ## Shape
 
@@ -52,6 +52,7 @@ Shape A is the choice. It keeps one owner for each piece of state and still keep
 src/domain/    Pure logic. Corridors, amounts, schedule, spread, outcome, conditions, alerts, snapshot.
 src/gateway/   The network boundary. Response schemas, the route-limited client, the SDK request builder.
 src/store/     The D1 repository.
+src/notify/   The alert webhook sender.
 src/worker/    The shell. Config parsing, the scheduled handler, the read-only routes.
 dashboard/     The static page. It imports the snapshot types from src/domain/snapshot.ts.
 ```
@@ -121,9 +122,9 @@ Answers marked "measured" come from three tagged testnet quote requests sent on 
 
 Measured. Every gateway response carries `x-ratelimit-limit: 30`. The remaining count recovered within two seconds, so the limit is close to 30 requests per second per caller. One probe costs one `POST` and about seven `GET` calls over three seconds. The gateway limit does not constrain a polite prober.
 
-Needs a person. The limit that matters is the work each broadcast gives to settler operators, and nobody has agreed a number. The default is deliberately low: 30 sequential probes every 5 minutes, which is 360 broadcasts per hour. Testnet has 552 corridors and 3 tiers, so one full sweep takes about 4.6 hours. `PROBES_PER_TICK`, the cron schedule and `CORRIDOR_FILTER` change the rate. `PROBE_ENABLED=false` stops it.
+Needs a person. The limit that matters is the work each broadcast gives to settler operators, and nobody has agreed a number. The default is deliberately low: 30 sequential probes every 30 minutes, which is 60 broadcasts per hour. The repository owner set that rate on 2026-11-23. The first default was 30 probes every 5 minutes. Testnet has 552 corridors and 3 tiers, so one full sweep takes about 27.6 hours. `PROBES_PER_TICK`, the cron schedule and `CORRIDOR_FILTER` change the rate. `PROBE_ENABLED=false` stops it.
 
-**Decision needed before deploy.** Confirm 360 broadcasts per hour on testnet with whoever runs the settlers, or give a number.
+**Decision needed before deploy.** Confirm 60 broadcasts per hour on testnet with whoever runs the settlers, or give a number.
 
 ### 2. Does the depositor need to be a funded or real account?
 
@@ -168,18 +169,50 @@ A corridor's condition comes from the latest probe of each tier.
 
 The condition does not rank operators and does not depend on who quoted.
 
-| Alert            | Fires when                                                                                         | Severity |
-| ---------------- | -------------------------------------------------------------------------------------------------- | -------- |
-| `prober_stale`   | No tick finished within three intervals                                                            | Critical |
-| `gateway_errors` | Discovery failed or listed no usable chain, or half or more of a tick's probes were gateway errors | Critical |
-| `quotes_lost`    | A corridor tier was quoted on its previous probe and is not quoted now                             | Critical |
-| `slow_quotes`    | Time to first quote is above `SLOW_QUOTE_MS`                                                       | Warning  |
+| Alert            | Fires when                                                                                                | Severity |
+| ---------------- | --------------------------------------------------------------------------------------------------------- | -------- |
+| `prober_stale`   | No tick finished within three intervals                                                                   | Critical |
+| `gateway_errors` | Discovery failed or listed no usable chain, or half or more of a tick's probes were gateway errors        | Critical |
+| `quotes_lost`    | A corridor was quoted in the last 7 days, and the latest probe of every configured tier is now not quoted | Critical |
+| `slow_quotes`    | Time to first quote is above `SLOW_QUOTE_MS`                                                              | Warning  |
 
-`/api/v1/health` returns `503` when a critical alert is active. A monitor only needs an HTTP check on that path. The public page shows alerts but pages nobody.
+`quotes_lost` describes a state, not a moment. It stays active until a tier of the corridor is quoted again, or until 7 days pass with no quote. A corridor that still quotes at some tier raises no alert: the dashboard shows it as cloudy.
+
+`/api/v1/health` returns `503` when a critical alert is active. An outside monitor only needs an HTTP check on that path. A deployment with no outside monitor uses the canary cron, described next. The public page shows alerts but pages nobody.
+
+## Alert delivery
+
+Two ways exist to learn that an alert fired. Use either, or both.
+
+|                    | Pull                                                                        | Push                                                |
+| ------------------ | --------------------------------------------------------------------------- | --------------------------------------------------- |
+| Who starts it      | An outside monitor, such as a Datadog Synthetic test or a Prometheus scrape | A second Cloudflare Cron Trigger on the same Worker |
+| What it reads      | `/api/v1/health` or `/metrics`                                              | The same health report, computed inside the Worker  |
+| Needs              | A monitoring system                                                         | One webhook URL                                     |
+| Sees a dead Worker | Yes                                                                         | No                                                  |
+
+The push path exists for a deployment that has only Cloudflare.
+
+The Worker has two Cron Triggers, and `scheduled()` tells them apart by `controller.cron`. `PROBE_CRON` and `CANARY_CRON` name the two expressions. A trigger whose expression matches neither does nothing and logs an error, so a mistyped variable can never turn the canary trigger into a second probe tick. The probe cron runs a tick. The canary cron, five minutes later, builds the health report that `/api/v1/health` serves and compares its alerts with the alerts it has already announced.
+
+- An alert that is new is announced as raised.
+- An alert that is gone from the health report is announced as cleared. Raising `ALERT_MIN_SEVERITY` does not clear an alert that is still active.
+- An alert that is still active is not announced again.
+
+One run sends at most one message, which lists what was raised and what was cleared. The text names at most ten alerts on each side. Past ten raised alerts it points at `/api/v1/health`, which lists every active alert. The canary records an announcement only after the webhook answers `2xx`, so a failed delivery is tried again on the next run. The announced alerts live in the `alert_notifications` table.
+
+The canary is a separate invocation so that a tick that crashes or runs out of time cannot take the alert with it. A tick that stops finishing shows up as `prober_stale` on the next canary run.
+
+Two limits are inherent, and no code inside the Worker can remove them.
+
+- If Cloudflare stops invoking the Worker, nothing inside it can say so. Only an outside check on `/api/v1/health` sees that.
+- A fresh deploy has no finished tick, so the first canary run can announce `prober_stale` and the next can clear it.
+
+The webhook sender is not the gateway client. It posts JSON to the one configured URL, requires `https` (plain `http` only on a loopback address, for local runs), never follows a redirect, and sends nothing that names an operator. `ALERT_WEBHOOK_FORMAT` chooses between a `{"text": ...}` body, which Slack, Mattermost and Google Chat accept, and a structured body for anything else. With no `ALERT_WEBHOOK_URL`, the canary only logs.
 
 ## What is not built
 
 - No routing advice and no price API that others should depend on. The JSON endpoints exist for the dashboard and can change.
 - No operator ranking.
 - No mainnet deployment. That waits for questions 1 and 4.
-- No alert delivery. The team's monitoring owns that. RUNBOOK.md has the check to add and the drill that proves it fires.
+- No paging and no on-call routing. The Worker posts alert changes to one webhook. What that webhook does with them belongs to the team that owns it.

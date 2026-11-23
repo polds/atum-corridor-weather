@@ -1,5 +1,5 @@
-import type { TierHistory } from "../domain/alerts";
-import { compareText } from "../domain/brands";
+import type { LastQuote, TierLatest } from "../domain/alerts";
+import { type AnnouncedAlert, alertKeyOf, type NotificationPlan } from "../domain/notify";
 import { readingOf } from "../domain/publish";
 import type { Snapshot, SnapshotTick, TierReading } from "../domain/snapshot";
 import type {
@@ -13,8 +13,10 @@ import type {
 	TickRecord,
 } from "../domain/types";
 import {
+	announcedAlertRowSchema,
 	corridorRowSchema,
 	errorRunRowSchema,
+	lastQuoteRowSchema,
 	probeRowSchema,
 	snapshotPartRowSchema,
 	snapshotRowSchema,
@@ -24,7 +26,10 @@ import {
 /** What the snapshot builder reads: the current corridors, their tier readings, and the last tick. */
 export interface SnapshotSource {
 	readonly corridors: readonly Corridor[];
-	readonly tiers: readonly TierHistory[];
+	/** The latest reading of every current corridor at every configured tier it was probed at. */
+	readonly tiers: readonly TierLatest[];
+	/** The last quote of every current corridor at a configured tier, however old. */
+	readonly lastQuotes: readonly LastQuote[];
 	readonly lastTick: SnapshotTick | null;
 	/** Slot start of the first failing tick after the last healthy one. Null when the last tick is healthy. */
 	readonly errorRunStart: IsoTimestamp | null;
@@ -53,6 +58,16 @@ export interface Store {
 		corridorId: CorridorId,
 		since: IsoTimestamp,
 	): Promise<TierReading[]>;
+	/** Alerts announced as raised and not yet announced as cleared. */
+	readAnnouncedAlerts(network: Network): Promise<AnnouncedAlert[]>;
+	/**
+	 * Records a delivered plan in one batch: inserts the raised alerts, keeping a
+	 * row that already exists, and deletes the cleared ones.
+	 */
+	applyAnnouncements(
+		network: Network,
+		announcements: NotificationPlan & { readonly announcedAt: IsoTimestamp },
+	): Promise<void>;
 }
 
 /** Each bound JSON parameter stays well under D1's 2 MB value limit. */
@@ -125,6 +140,16 @@ const PROBE_COLUMNS = [
 	"error_http_status",
 	"error_code",
 	"error_message",
+] as const;
+
+const ANNOUNCED_COLUMNS = [
+	"network",
+	"alert_key",
+	"kind",
+	"severity",
+	"corridor_id",
+	"since",
+	"announced_at",
 ] as const;
 
 const DECLINE_COLUMNS = ["probe_id", "ordinal", "reason", "retry_classification", "count"] as const;
@@ -303,14 +328,35 @@ const DECLINES_JSON = `(SELECT json_group_array(json_object(
 		'reason', d.reason, 'retryClassification', d.retry_classification, 'count', d.count))
 	FROM (SELECT * FROM probe_declines WHERE probe_id = p.id ORDER BY ordinal) AS d) AS declines_json`;
 
-/** The latest two probes of every current corridor at every tier, through `probes_latest`. */
-const LATEST_TWO = `WITH current AS (${CURRENT_CORRIDORS})
+/** The latest probe of every current corridor at every tier in `?2`, through `probes_latest`. */
+const LATEST = `WITH current AS (${CURRENT_CORRIDORS})
 	SELECT p.*, ${DECLINES_JSON}
 	FROM current AS c CROSS JOIN json_each(?2) AS t
-	JOIN probes AS p ON p.rowid IN (
+	JOIN probes AS p ON p.rowid = (
 		SELECT q.rowid FROM probes AS q
 		WHERE q.network = ?1 AND q.corridor_id = c.id AND q.tier = t.value
-		ORDER BY q.slot_start DESC LIMIT 2)`;
+		ORDER BY q.slot_start DESC LIMIT 1)`;
+
+/**
+ * Per current corridor, the last quoted probe at a tier in `?2`, through the
+ * partial index `probes_quoted`, and the first probe at such a tier after it,
+ * through `probes_history`. Probes are written once, so both hold still until
+ * the corridor is quoted again.
+ */
+const LAST_QUOTES = `WITH current AS (${CURRENT_CORRIDORS}),
+	last AS (
+		SELECT c.id AS corridor_id, MAX((
+			SELECT q.started_at FROM probes AS q
+			WHERE q.network = ?1 AND q.corridor_id = c.id AND q.tier = t.value AND q.outcome = 'quoted'
+			ORDER BY q.slot_start DESC LIMIT 1)) AS quoted_at
+		FROM current AS c CROSS JOIN json_each(?2) AS t
+		GROUP BY c.id)
+	SELECT corridor_id, quoted_at, (
+		SELECT p.started_at FROM probes AS p
+		WHERE p.network = ?1 AND p.corridor_id = last.corridor_id AND p.started_at > last.quoted_at
+			AND p.tier IN (SELECT value FROM json_each(?2))
+		ORDER BY p.started_at LIMIT 1) AS first_unquoted_at
+	FROM last WHERE quoted_at IS NOT NULL`;
 
 /** A failing tick: `tickErrored` in `src/domain/alerts.ts`, in SQL. */
 const ERRORED_TICK = `(aborted_reason IS 'defaults_unavailable' OR (completed > 0 AND 2 * gateway_errors >= completed))`;
@@ -381,31 +427,24 @@ export function createStore(db: D1Database): Store {
 		},
 
 		async readSnapshotSource(network, tiers) {
-			const [corridorRows, probeRows, tickRows, runRows] = await db.batch([
+			const tierList = JSON.stringify(tiers);
+			const [corridorRows, probeRows, quoteRows, tickRows, runRows] = await db.batch([
 				db.prepare(`${CURRENT_CORRIDORS} ORDER BY id`).bind(network),
-				db.prepare(LATEST_TWO).bind(network, JSON.stringify(tiers)),
+				db.prepare(LATEST).bind(network, tierList),
+				db.prepare(LAST_QUOTES).bind(network, tierList),
 				db
 					.prepare("SELECT * FROM ticks WHERE network = ?1 ORDER BY slot_start DESC LIMIT 1")
 					.bind(network),
 				db.prepare(ERROR_RUN_START).bind(network),
 			]);
 			const corridors = (corridorRows?.results ?? []).map((row) => corridorRowSchema.parse(row));
-			const readings = (probeRows?.results ?? [])
-				.map((row) => probeRowSchema.parse(row))
-				.sort((a, b) => compareText(b.slotStart, a.slotStart));
-			const byTier = new Map<string, TierHistory>();
-			for (const { corridorId, reading } of readings) {
-				const key = `${corridorId} ${reading.tier}`;
-				const seen = byTier.get(key);
-				if (seen === undefined) {
-					byTier.set(key, { corridorId, latest: reading, previous: null });
-				} else if (seen.previous === null) {
-					byTier.set(key, { ...seen, previous: reading });
-				}
-			}
 			return {
 				corridors,
-				tiers: [...byTier.values()],
+				tiers: (probeRows?.results ?? []).map((row) => {
+					const { corridorId, reading } = probeRowSchema.parse(row);
+					return { corridorId, latest: reading };
+				}),
+				lastQuotes: (quoteRows?.results ?? []).map((row) => lastQuoteRowSchema.parse(row)),
 				lastTick: (tickRows?.results ?? []).map((row) => tickRowSchema.parse(row))[0] ?? null,
 				errorRunStart: errorRunRowSchema.parse(runRows?.results[0]).since,
 			};
@@ -455,6 +494,38 @@ export function createStore(db: D1Database): Store {
 				.bind(network, corridorId, since)
 				.all();
 			return results.map((row) => probeRowSchema.parse(row).reading);
+		},
+
+		async readAnnouncedAlerts(network) {
+			const { results } = await db
+				.prepare("SELECT * FROM alert_notifications WHERE network = ?1 ORDER BY alert_key")
+				.bind(network)
+				.all();
+			return results.map((row) => announcedAlertRowSchema.parse(row));
+		},
+
+		async applyAnnouncements(network, { raised, cleared, announcedAt }) {
+			await db.batch([
+				...bulkInsert(db, {
+					table: "alert_notifications",
+					columns: ANNOUNCED_COLUMNS,
+					conflict: ["network", "alert_key"],
+					rows: raised.map((alert) => ({
+						network,
+						alert_key: alertKeyOf(alert),
+						kind: alert.kind,
+						severity: alert.severity,
+						corridor_id: alert.corridorId,
+						since: alert.since,
+						announced_at: announcedAt,
+					})),
+				}),
+				db
+					.prepare(
+						"DELETE FROM alert_notifications WHERE network = ?1 AND alert_key IN (SELECT value FROM json_each(?2))",
+					)
+					.bind(network, JSON.stringify(cleared.map((alert) => alert.key))),
+			]);
 		},
 	};
 }

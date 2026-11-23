@@ -5,7 +5,10 @@
 	"compatibility_date": "2026-11-01",
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
-	"triggers": { "crons": ["*/5 * * * *"] },
+	// The probe cron runs a tick. The canary cron, five minutes later, announces alert
+	// changes. scheduled() tells them apart by PROBE_CRON and CANARY_CRON and ignores
+	// any other trigger, so keep these two entries equal to those two vars.
+	"triggers": { "crons": ["*/30 * * * *", "5,35 * * * *"] },
 	"assets": {
 		"directory": "dist/dashboard",
 		"binding": "ASSETS",
@@ -24,7 +27,7 @@
 		"NETWORK": "testnet",
 		"GATEWAY_URL": "https://payment-gw.production-testnet.atum.xyz",
 		"PROBE_ENABLED": "true",
-		"TICK_INTERVAL_MINUTES": "5",
+		"TICK_INTERVAL_MINUTES": "30",
 		"PROBES_PER_TICK": "30",
 		"AMOUNT_TIERS": "{\"small\":\"1\",\"typical\":\"25\",\"large\":\"100\"}",
 		"POLL_INTERVAL_MS": "500",
@@ -33,6 +36,12 @@
 		"RAW_RETENTION_DAYS": "14",
 		"CORRIDOR_FILTER": "",
 		"MAINNET_ACK": "",
-		"REPOSITORY_URL": "https://github.com/polds/atum-corridor-weather"
+		"REPOSITORY_URL": "https://github.com/polds/atum-corridor-weather",
+		"PROBE_CRON": "*/30 * * * *",
+		"CANARY_CRON": "5,35 * * * *",
+		// ALERT_WEBHOOK_URL is a secret: `wrangler secret put ALERT_WEBHOOK_URL`.
+		"ALERT_WEBHOOK_FORMAT": "slack",
+		"ALERT_MIN_SEVERITY": "critical",
+		"PUBLIC_URL": ""
 	}
 }

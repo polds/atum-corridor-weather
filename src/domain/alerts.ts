@@ -2,12 +2,22 @@ import { compareText, isoAt } from "./brands";
 import type { Alert, AlertKind, SnapshotTick, TierReading } from "./snapshot";
 import type { CorridorId, IsoTimestamp } from "./types";
 
-/** The latest and the previous reading of one corridor at one tier. */
-export interface TierHistory {
+/** The latest reading of one corridor at one configured tier. */
+export interface TierLatest {
 	readonly corridorId: CorridorId;
 	readonly latest: TierReading;
-	readonly previous: TierReading | null;
 }
+
+/** The last quoted probe of one corridor at any configured tier. */
+export interface LastQuote {
+	readonly corridorId: CorridorId;
+	readonly quotedAt: IsoTimestamp;
+	/** The first probe of a configured tier after `quotedAt`. Null when none followed it. */
+	readonly firstUnquotedAt: IsoTimestamp | null;
+}
+
+/** How long after its last quote a corridor that quotes at no tier still raises `quotes_lost`. */
+export const QUOTES_LOST_WINDOW_DAYS = 7;
 
 export interface AlertInput {
 	readonly nowMs: number;
@@ -19,7 +29,9 @@ export interface AlertInput {
 	 * when the last tick is healthy. The store reads it with the rule of `tickErrored`.
 	 */
 	readonly errorRunStart: IsoTimestamp | null;
-	readonly tiers: readonly TierHistory[];
+	readonly tiers: readonly TierLatest[];
+	/** One per corridor that was ever quoted at a configured tier. */
+	readonly lastQuotes: readonly LastQuote[];
 }
 
 const KIND_ORDER: readonly AlertKind[] = [
@@ -80,28 +92,44 @@ function gatewayErrorsAlert(
 	};
 }
 
-function tierAlerts(history: TierHistory, slowQuoteMs: number): Alert[] {
-	const { corridorId, latest, previous } = history;
-	const alerts: Alert[] = [];
-	if (previous?.outcome === "quoted" && latest.outcome !== "quoted") {
-		alerts.push({
-			kind: "quotes_lost",
-			severity: "critical",
-			corridorId,
-			message: `The ${latest.tier} tier was quoted at ${previous.probedAt} and was ${latest.outcome} at ${latest.probedAt}.`,
-			since: latest.probedAt,
-		});
-	}
-	if (latest.firstQuoteMs !== null && latest.firstQuoteMs > slowQuoteMs) {
-		alerts.push({
+/**
+ * `quotes_lost`, a state of a corridor: it was quoted within the window, and the
+ * latest probe of every probed configured tier is not quoted. Its `since` is the
+ * first probe after the last quote, so it holds still while the alert is active.
+ */
+function quotesLostAlerts(input: AlertInput): Alert[] {
+	const quotedNow = new Set(
+		input.tiers.flatMap(({ corridorId, latest }) =>
+			latest.outcome === "quoted" ? [corridorId] : [],
+		),
+	);
+	const windowMs = QUOTES_LOST_WINDOW_DAYS * 24 * 60 * 60_000;
+	return input.lastQuotes.flatMap((last): Alert[] => {
+		if (quotedNow.has(last.corridorId)) return [];
+		if (input.nowMs - Date.parse(last.quotedAt) > windowMs) return [];
+		return [
+			{
+				kind: "quotes_lost",
+				severity: "critical",
+				corridorId: last.corridorId,
+				message: `No tier is quoted now. The last quote was at ${last.quotedAt}.`,
+				since: last.firstUnquotedAt ?? last.quotedAt,
+			},
+		];
+	});
+}
+
+function slowQuoteAlert({ corridorId, latest }: TierLatest, slowQuoteMs: number): Alert[] {
+	if (latest.firstQuoteMs === null || latest.firstQuoteMs <= slowQuoteMs) return [];
+	return [
+		{
 			kind: "slow_quotes",
 			severity: "warning",
 			corridorId,
 			message: `The ${latest.tier} tier took ${latest.firstQuoteMs} ms to its first quote, over ${slowQuoteMs} ms.`,
 			since: latest.probedAt,
-		});
-	}
-	return alerts;
+		},
+	];
 }
 
 /** Every active alert, critical kinds first, then by corridor. */
@@ -115,7 +143,8 @@ export function alertsFor(input: AlertInput): Alert[] {
 	return [
 		...(stale === null ? [] : [stale]),
 		...(errors === null ? [] : [errors]),
-		...input.tiers.flatMap((history) => tierAlerts(history, input.slowQuoteMs)),
+		...quotesLostAlerts(input),
+		...input.tiers.flatMap((tier) => slowQuoteAlert(tier, input.slowQuoteMs)),
 	].sort(
 		(a, b) =>
 			KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) ||

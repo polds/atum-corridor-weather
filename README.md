@@ -14,7 +14,7 @@ The design removes the ability to spend, for four structural reasons. [docs/DESI
 - The gateway client has three operations: read defaults, create a quote request, and read a quote request. It refuses every other path before it sends anything, and it never follows a redirect. There is no award call.
 - The quote request body has no `sender_auth` field. Tests check the builder output for it.
 - The probe accounts have no private key. Each address comes from the hash of the public label `corridor-weather-probe/v1`, so no key for it exists.
-- The Worker holds no secret. Its only bindings are one D1 database and the static assets.
+- The Worker holds no secret that can sign or spend. Its only bindings are one D1 database and the static assets. The one optional secret is the URL of the alert webhook.
 
 ## What a probe is
 
@@ -46,7 +46,7 @@ Corridor Weather marks every request in three ways. Filter on any of them, for e
 
 Operators see the request body but not the HTTP headers, so the account is the marker to rely on. Run `pnpm run probe-identity` to derive the accounts yourself.
 
-The default cadence is 30 probes every 5 minutes on testnet, which is about 360 quote broadcasts per hour. Nobody has agreed this rate with the settler operators yet. A retried cron run reuses the same `request_id` values, so the gateway does not broadcast the same probe twice.
+The default cadence is 30 probes every 30 minutes on testnet, which is 60 quote broadcasts per hour. Nobody has agreed this rate with the settler operators yet. A retried cron run reuses the same `request_id` values, so the gateway does not broadcast the same probe twice.
 
 To ask for a lower rate, or for probing to stop, [open an issue](https://github.com/polds/atum-corridor-weather/issues/new). The maintainer can lower `PROBES_PER_TICK` or set `PROBE_ENABLED=false` and redeploy. [docs/RUNBOOK.md](docs/RUNBOOK.md#change-the-probe-rate) has the steps.
 
@@ -83,7 +83,7 @@ You need Node 22 (see `.nvmrc`) and pnpm 10. Run `corepack enable pnpm` to use t
 6. In a second terminal, trigger one tick.
 
    ```bash
-   curl "http://localhost:8787/__scheduled?cron=*/5+*+*+*+*"
+   curl "http://localhost:8787/__scheduled?cron=*/30+*+*+*+*"
    ```
 
 7. Open `http://localhost:8787/` for the dashboard, or read `http://localhost:8787/api/v1/snapshot.json`.
@@ -97,7 +97,7 @@ The variables are in the `vars` block of `wrangler.jsonc`. A deploy replaces any
 | `NETWORK`               | `testnet`                                        | The network to probe. `mainnet` is refused unless `MAINNET_ACK` is set.                                                                                                                                                                                |
 | `GATEWAY_URL`           | `https://payment-gw.production-testnet.atum.xyz` | The origin of the Atum payment gateway. It must be the gateway of `NETWORK`, or a loopback address for local runs.                                                                                                                                     |
 | `PROBE_ENABLED`         | `true`                                           | `false` stops probing.                                                                                                                                                                                                                                 |
-| `TICK_INTERVAL_MINUTES` | `5`                                              | The length of one scheduling slot. Keep it equal to the interval of the cron trigger in `triggers.crons`.                                                                                                                                              |
+| `TICK_INTERVAL_MINUTES` | `30`                                             | The length of one scheduling slot. Keep it equal to the interval of `PROBE_CRON`.                                                                                                                                                                      |
 | `PROBES_PER_TICK`       | `30`                                             | The number of probe targets in each tick.                                                                                                                                                                                                              |
 | `AMOUNT_TIERS`          | `{"small":"1","typical":"25","large":"100"}`     | The amount for each tier, in whole tokens. The Worker converts it with the decimals from `/v1/defaults`. At most 18 fractional and 24 integer digits.                                                                                                  |
 | `POLL_INTERVAL_MS`      | `500`                                            | The wait between two status polls of one quote request.                                                                                                                                                                                                |
@@ -106,6 +106,12 @@ The variables are in the `vars` block of `wrangler.jsonc`. A deploy replaces any
 | `CORRIDOR_FILTER`       | empty                                            | Empty probes every corridor. Otherwise a regular expression. The Worker probes only the corridors whose label matches it. A label is `{source chain id}/{symbol}>{destination chain id}/{symbol}`, for example `eip155:421614/USDC>eip155:84532/USDC`. |
 | `MAINNET_ACK`           | empty                                            | Must be `cadence-and-publishing-agreed` before the Worker accepts `NETWORK=mainnet`.                                                                                                                                                                   |
 | `REPOSITORY_URL`        | `https://github.com/polds/atum-corridor-weather` | The URL in the probe `User-Agent`.                                                                                                                                                                                                                     |
+| `PROBE_CRON`            | `*/30 * * * *`                                   | The cron expression that runs a probe tick. It must equal one entry in `triggers.crons`, character for character. A trigger that matches neither `PROBE_CRON` nor `CANARY_CRON` does nothing and logs `unknown_cron`.                                  |
+| `CANARY_CRON`           | `5,35 * * * *`                                   | The cron expression that runs the canary. It must equal one entry in `triggers.crons`, character for character.                                                                                                                                        |
+| `ALERT_WEBHOOK_URL`     | unset                                            | A secret, set with `wrangler secret put`. The canary posts alert changes to it. It must use `https`. Unset, the canary only logs.                                                                                                                      |
+| `ALERT_WEBHOOK_FORMAT`  | `slack`                                          | `slack` posts `{"text": ...}`, which Slack, Mattermost and Google Chat accept. `json` posts a structured body.                                                                                                                                         |
+| `ALERT_MIN_SEVERITY`    | `critical`                                       | `critical` announces critical alerts only. `warning` also announces `slow_quotes`.                                                                                                                                                                     |
+| `PUBLIC_URL`            | empty                                            | The address of the deployed Worker. When set, alert messages end with links to the dashboard and the health report.                                                                                                                                    |
 
 ## HTTP endpoints
 
@@ -124,7 +130,7 @@ The JSON endpoints exist for the dashboard. They can change without notice, so d
 - Testnet only. The deploy workflow refuses a `wrangler.jsonc` that sets `NETWORK` to anything but `testnet`.
 - Not deployed yet. `wrangler.jsonc` still holds a placeholder D1 database id.
 - Two decisions need a person before the project goes further. [docs/DESIGN.md](docs/DESIGN.md#answers-to-the-open-questions) explains both.
-  - Question 1: confirm 360 broadcasts per hour on testnet with the settler operators, or set another rate. This blocks the first deploy.
+  - Question 1: confirm 60 broadcasts per hour on testnet with the settler operators, or set another rate. This blocks the first deploy.
   - Question 4: decide whether publishing mainnet operator addresses and prices is acceptable. This needs legal review and blocks mainnet.
 
 ## Documentation

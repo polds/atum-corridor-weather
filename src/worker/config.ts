@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { TierAmounts } from "../domain/schedule";
+import type { AlertSeverity } from "../domain/snapshot";
 import { AMOUNT_TIERS, type Network } from "../domain/types";
+import type { WebhookFormat } from "../notify/webhook";
 
 /** The value `MAINNET_ACK` must hold before `NETWORK=mainnet` is accepted. */
 export const MAINNET_ACK = "cadence-and-publishing-agreed";
@@ -28,6 +30,22 @@ function isGatewayFor(network: Network, gatewayUrl: string): boolean {
 	);
 }
 
+/** An `https:` URL, or `http:` on a loopback host for local runs. */
+function isPublicOrLoopbackUrl(text: string): boolean {
+	if (!URL.canParse(text)) return false;
+	const url = new URL(text);
+	return (
+		url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname))
+	);
+}
+
+/** Where the canary posts alert changes. */
+export interface AlertWebhook {
+	/** A secret. Log only its origin. */
+	readonly url: string;
+	readonly format: WebhookFormat;
+}
+
 export interface Config {
 	readonly network: Network;
 	readonly gatewayUrl: string;
@@ -42,6 +60,15 @@ export interface Config {
 	readonly corridorFilter: RegExp | null;
 	/** Days `probe_raw` keeps a probe. 0 keeps every probe. */
 	readonly rawRetentionDays: number;
+	/** `controller.cron` of the probe Cron Trigger, character for character. */
+	readonly probeCron: string;
+	/** `controller.cron` of the canary Cron Trigger, character for character. Not `probeCron`. */
+	readonly canaryCron: string;
+	/** Null when `ALERT_WEBHOOK_URL` is unset: the canary only logs. */
+	readonly alertWebhook: AlertWebhook | null;
+	readonly alertMinSeverity: AlertSeverity;
+	/** The public dashboard, origin plus path with no trailing slash. Null when unset. */
+	readonly publicUrl: string | null;
 }
 
 export type ConfigResult =
@@ -55,6 +82,25 @@ function integer(min: number, max: number) {
 		.transform(Number)
 		.pipe(z.number().int().min(min).max(max));
 }
+
+/**
+ * One of `values`. The message names the allowed values and never quotes the
+ * value: a secret pasted into the wrong variable must not reach the published errors.
+ */
+function oneOf<const T extends readonly [string, ...string[]]>(values: T) {
+	return z.enum(values, {
+		errorMap: () => ({ message: `must be ${values.join(" or ")}` }),
+	});
+}
+
+/**
+ * A cron expression as Cloudflare passes it in `controller.cron`: five fields of
+ * no whitespace, joined by single spaces. `scheduled()` compares it character
+ * for character, so a stray space would match no trigger.
+ */
+const cron = z
+	.string({ required_error: "must name a Cron Trigger in wrangler.jsonc" })
+	.regex(/^\S+( \S+){4}$/, "must be five cron fields joined by single spaces");
 
 const httpUrl = z
 	.string()
@@ -103,14 +149,37 @@ const corridorFilter = z
 		}
 	});
 
+// An empty value means unset. The message never quotes the value: ALERT_WEBHOOK_URL
+// is a secret, and the routes publish configuration errors.
+const optionalUrl = z
+	.string()
+	.default("")
+	.refine(
+		(value) => value === "" || isPublicOrLoopbackUrl(value),
+		"must be an https URL, or an http URL on a loopback host",
+	);
+
+const alertWebhookUrl = optionalUrl.transform((value) => (value === "" ? null : value));
+
+/** Origin plus path, without a trailing slash, so links are built one way. */
+const publicUrl = optionalUrl.transform((value, context): string | null => {
+	if (value === "") return null;
+	const url = new URL(value);
+	if (url.search !== "" || url.hash !== "") {
+		context.addIssue({ code: z.ZodIssueCode.custom, message: "must have no query or fragment" });
+		return z.NEVER;
+	}
+	return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+});
+
 const envSchema = z
 	.object({
-		NETWORK: z.enum(["testnet", "mainnet"]),
+		NETWORK: oneOf(["testnet", "mainnet"]),
 		MAINNET_ACK: z.string().default(""),
 		// Checked against NETWORK below.
 		GATEWAY_URL: z.string(),
 		REPOSITORY_URL: httpUrl,
-		PROBE_ENABLED: z.enum(["true", "false"]).transform((value) => value === "true"),
+		PROBE_ENABLED: oneOf(["true", "false"]).transform((value) => value === "true"),
 		TICK_INTERVAL_MINUTES: integer(1, 1440),
 		PROBES_PER_TICK: integer(1, 200),
 		AMOUNT_TIERS: tierAmounts,
@@ -119,6 +188,12 @@ const envSchema = z
 		SLOW_QUOTE_MS: integer(0, 600_000),
 		CORRIDOR_FILTER: corridorFilter,
 		RAW_RETENTION_DAYS: integer(0, 3650).default("14"),
+		PROBE_CRON: cron,
+		CANARY_CRON: cron,
+		ALERT_WEBHOOK_URL: alertWebhookUrl,
+		ALERT_WEBHOOK_FORMAT: oneOf(["slack", "json"]).default("slack"),
+		ALERT_MIN_SEVERITY: oneOf(["critical", "warning"]).default("critical"),
+		PUBLIC_URL: publicUrl,
 	})
 	.superRefine((env, context) => {
 		if (!isGatewayFor(env.NETWORK, env.GATEWAY_URL)) {
@@ -126,6 +201,13 @@ const envSchema = z
 				code: z.ZodIssueCode.custom,
 				path: ["GATEWAY_URL"],
 				message: `NETWORK=${env.NETWORK} needs GATEWAY_URL=${GATEWAY_ORIGINS[env.NETWORK]}, or a loopback origin such as http://127.0.0.1:8789 for a local gateway`,
+			});
+		}
+		if (env.PROBE_CRON === env.CANARY_CRON) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["CANARY_CRON"],
+				message: "must differ from PROBE_CRON, or every canary run would also be a tick",
 			});
 		}
 		if (env.NETWORK === "mainnet" && env.MAINNET_ACK !== MAINNET_ACK) {
@@ -162,6 +244,14 @@ export function parseConfig(env: unknown): ConfigResult {
 			slowQuoteMs: value.SLOW_QUOTE_MS,
 			corridorFilter: value.CORRIDOR_FILTER,
 			rawRetentionDays: value.RAW_RETENTION_DAYS,
+			probeCron: value.PROBE_CRON,
+			canaryCron: value.CANARY_CRON,
+			alertWebhook:
+				value.ALERT_WEBHOOK_URL === null
+					? null
+					: { url: value.ALERT_WEBHOOK_URL, format: value.ALERT_WEBHOOK_FORMAT },
+			alertMinSeverity: value.ALERT_MIN_SEVERITY,
+			publicUrl: value.PUBLIC_URL,
 		},
 	};
 }

@@ -478,37 +478,64 @@ describe("a retried cron run of the same slot", () => {
 	});
 });
 
-describe("the snapshot follows the configured tiers", () => {
-	it("drops a tier removed from AMOUNT_TIERS, with its quotes_lost alert", async () => {
-		const both = testConfig({
-			...ONE_TARGET,
-			AMOUNT_TIERS: '{"small":"1","large":"250"}',
-			PROBES_PER_TICK: "2",
-		});
-		await runTick(
-			tickHarness({ startMs: SCHEDULED + 1000, config: both, scenario: quotedEverywhere }).deps,
-			SCHEDULED,
-		);
-		const lost = tickHarness({
-			startMs: SCHEDULED + 301_000,
-			config: both,
-			scenario: (id) => (id.endsWith(".large") ? fixtures.declinedLiquidity : fixtures.quoted),
-		});
-		await runTick(lost.deps, SCHEDULED + 300_000);
-		expect(
-			(await lost.store.readSnapshot("testnet"))?.alerts.map((alert) => alert.kind),
-		).toStrictEqual(["quotes_lost"]);
+describe("quotes_lost follows the configured tiers", () => {
+	const both = testConfig({
+		...ONE_TARGET,
+		AMOUNT_TIERS: '{"small":"1","large":"250"}',
+		PROBES_PER_TICK: "2",
+	});
+	const smallOnly = testConfig({ ...ONE_TARGET, PROBES_PER_TICK: "2" });
+	const DAY_MS = 24 * 60 * 60_000;
+	type Outcome = "quoted" | "declined";
 
-		const smallOnly = testConfig({ ...ONE_TARGET, PROBES_PER_TICK: "2" });
-		const after = tickHarness({
-			startMs: SCHEDULED + 601_000,
-			config: smallOnly,
-			scenario: quotedEverywhere,
+	/** One tick `offsetMs` after SCHEDULED. Returns the kinds of the snapshot's alerts. */
+	async function tickWith(
+		offsetMs: number,
+		config: typeof both,
+		small: Outcome,
+		large: Outcome = small,
+	): Promise<string[]> {
+		const fixture = (outcome: Outcome) =>
+			outcome === "quoted" ? fixtures.quoted : fixtures.declinedLiquidity;
+		const run = tickHarness({
+			startMs: SCHEDULED + offsetMs + 1000,
+			config,
+			scenario: (id) => fixture(id.endsWith(".large") ? large : small),
 		});
-		await runTick(after.deps, SCHEDULED + 600_000);
-		const snapshot = await after.store.readSnapshot("testnet");
-		expect(snapshot?.corridors[0]?.tiers.map((reading) => reading.tier)).toStrictEqual(["small"]);
-		expect(snapshot?.alerts).toStrictEqual([]);
+		await runTick(run.deps, SCHEDULED + offsetMs);
+		return ((await run.store.readSnapshot("testnet"))?.alerts ?? []).map((alert) => alert.kind);
+	}
+
+	it("raises nothing while one tier still quotes", async () => {
+		expect(await tickWith(0, both, "quoted")).toStrictEqual([]);
+		expect(await tickWith(300_000, both, "quoted", "declined")).toStrictEqual([]);
+		expect(await tickWith(600_000, both, "declined", "quoted")).toStrictEqual([]);
+	});
+
+	it("raises nothing once the last quote is older than 7 days", async () => {
+		expect(await tickWith(0, both, "quoted")).toStrictEqual([]);
+		expect(await tickWith(300_000, both, "declined")).toStrictEqual(["quotes_lost"]);
+		expect(await tickWith(7 * DAY_MS - 300_000, both, "declined")).toStrictEqual(["quotes_lost"]);
+		expect(await tickWith(7 * DAY_MS + 300_000, both, "declined")).toStrictEqual([]);
+	});
+
+	it("ignores a tier removed from AMOUNT_TIERS that still quotes", async () => {
+		await tickWith(0, both, "quoted");
+		expect(await tickWith(300_000, both, "declined", "quoted")).toStrictEqual([]);
+		expect(await tickWith(600_000, smallOnly, "declined")).toStrictEqual(["quotes_lost"]);
+	});
+
+	it("ignores the last quote of a tier removed from AMOUNT_TIERS", async () => {
+		await tickWith(0, both, "declined", "quoted");
+		expect(await tickWith(300_000, both, "declined")).toStrictEqual(["quotes_lost"]);
+		const snapshot = await createStore(env.DB).readSnapshot("testnet");
+		expect(snapshot?.corridors[0]?.tiers.map((reading) => reading.tier)).toStrictEqual([
+			"small",
+			"large",
+		]);
+		expect(await tickWith(600_000, smallOnly, "declined")).toStrictEqual([]);
+		const after = await createStore(env.DB).readSnapshot("testnet");
+		expect(after?.corridors[0]?.tiers.map((reading) => reading.tier)).toStrictEqual(["small"]);
 	});
 });
 

@@ -1,7 +1,8 @@
 import { isCorridorId, isoAt } from "../domain/brands";
-import { buildHealth, buildHistory, buildMetrics } from "../domain/publish";
+import { buildHistory, buildMetrics } from "../domain/publish";
 import type { Store } from "../store/store";
 import type { ConfigResult } from "./config";
+import { readHealth } from "./health";
 
 export interface RouteDeps {
 	readonly config: ConfigResult;
@@ -89,13 +90,7 @@ export async function handleRequest(request: Request, deps: RouteDeps): Promise<
 	}
 
 	if (path === "/api/v1/health" || path === "/metrics") {
-		const snapshot = await store.readSnapshot(config.network);
-		const health = buildHealth({
-			network: config.network,
-			nowMs,
-			tickIntervalMinutes: config.tickIntervalMinutes,
-			snapshot,
-		});
+		const { snapshot, health } = await readHealth({ config, store, nowMs });
 		if (path === "/metrics") {
 			return respond(request, buildMetrics({ network: config.network, snapshot, health }), {
 				type: "text/plain; version=0.0.4; charset=utf-8",

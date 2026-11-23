@@ -90,14 +90,13 @@ describe("buildSnapshot", () => {
 			{
 				corridorId: ARB,
 				latest: reading("small", "quoted", "2026-11-22T11:55:10.000Z"),
-				previous: null,
 			},
 			{
 				corridorId: ARB,
 				latest: reading("large", "declined", "2026-11-22T11:50:10.000Z"),
-				previous: null,
 			},
 		],
+		lastQuotes: [],
 		lastTick: tick("2026-11-22T11:55:00.000Z"),
 		errorRunStart: null,
 	});
@@ -113,6 +112,7 @@ describe("buildSnapshot", () => {
 			tierAmounts: { large: "250", small: "1" },
 			corridors: testnetCorridors,
 			tiers: [],
+			lastQuotes: [],
 			lastTick: null,
 			errorRunStart: null,
 		});
@@ -189,9 +189,9 @@ describe("buildHealth", () => {
 			{
 				corridorId: ARB,
 				latest: reading("small", "quoted", "2026-11-22T11:55:10.000Z"),
-				previous: null,
 			},
 		],
+		lastQuotes: [],
 		lastTick: tick("2026-11-22T11:55:00.000Z"),
 		errorRunStart: null,
 	});

@@ -1,5 +1,6 @@
 /** Schemas for what the store reads back from D1. */
 import { z } from "zod";
+import type { LastQuote } from "../domain/alerts";
 import {
 	isAssetId,
 	isAtomicAmount,
@@ -8,6 +9,7 @@ import {
 	isIsoTimestamp,
 	namespaceOf,
 } from "../domain/brands";
+import { type AnnouncedAlert, isAlertKey } from "../domain/notify";
 import {
 	type Alert,
 	SNAPSHOT_SCHEMA_VERSION,
@@ -77,7 +79,6 @@ const readingSchema: z.ZodType<TierReading, z.ZodTypeDef, unknown> = z.object({
 export const probeRowSchema = z
 	.object({
 		corridor_id: corridorId,
-		slot_start: iso,
 		tier,
 		fulfillment_amount: atomic,
 		started_at: iso,
@@ -94,7 +95,6 @@ export const probeRowSchema = z
 	})
 	.transform((row) => ({
 		corridorId: row.corridor_id,
-		slotStart: row.slot_start,
 		reading: {
 			tier: row.tier,
 			fulfillmentAmount: row.fulfillment_amount,
@@ -173,12 +173,24 @@ export const tickRowSchema: z.ZodType<SnapshotTick, z.ZodTypeDef, unknown> = z
 		aborted: row.aborted_reason,
 	}));
 
+/** The last quote of a corridor at a configured tier, and the first probe after it. */
+export const lastQuoteRowSchema: z.ZodType<LastQuote, z.ZodTypeDef, unknown> = z
+	.object({ corridor_id: corridorId, quoted_at: iso, first_unquoted_at: iso.nullable() })
+	.transform((row) => ({
+		corridorId: row.corridor_id,
+		quotedAt: row.quoted_at,
+		firstUnquotedAt: row.first_unquoted_at,
+	}));
+
 /** `MIN(slot_start)` of the current run of failing ticks; null when there is none. */
 export const errorRunRowSchema = z.object({ since: iso.nullable() });
 
+const alertKind = z.enum(["prober_stale", "gateway_errors", "quotes_lost", "slow_quotes"]);
+const alertSeverity = z.enum(["warning", "critical"]);
+
 const alertSchema: z.ZodType<Alert, z.ZodTypeDef, unknown> = z.object({
-	kind: z.enum(["prober_stale", "gateway_errors", "quotes_lost", "slow_quotes"]),
-	severity: z.enum(["warning", "critical"]),
+	kind: alertKind,
+	severity: alertSeverity,
 	corridorId: corridorId.nullable(),
 	message: z.string(),
 	since: iso,
@@ -226,3 +238,21 @@ export const snapshotSchema: z.ZodType<Snapshot, z.ZodTypeDef, unknown> = z.obje
 export const snapshotRowSchema = z.object({ snapshot_json: jsonText(snapshotSchema) });
 
 export const snapshotPartRowSchema = z.object({ snapshot_json: z.string() });
+
+export const announcedAlertRowSchema: z.ZodType<AnnouncedAlert, z.ZodTypeDef, unknown> = z
+	.object({
+		alert_key: z.string().refine(isAlertKey, "not an alert key"),
+		kind: alertKind,
+		severity: alertSeverity,
+		corridor_id: corridorId.nullable(),
+		since: iso,
+		announced_at: iso,
+	})
+	.transform((row) => ({
+		key: row.alert_key,
+		kind: row.kind,
+		severity: row.severity,
+		corridorId: row.corridor_id,
+		since: row.since,
+		announcedAt: row.announced_at,
+	}));

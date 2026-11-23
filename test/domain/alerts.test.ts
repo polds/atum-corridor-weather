@@ -14,50 +14,93 @@ describe("alertsFor", () => {
 			...base,
 			lastTick: freshTick,
 			errorRunStart: null,
+			lastQuotes: [],
 			tiers: [
 				{
 					corridorId: A,
 					latest: reading("small", "quoted", "2026-11-22T11:55:10.000Z"),
-					previous: reading("small", "quoted", "2026-11-22T07:20:10.000Z"),
 				},
 			],
 		});
 		expect(alerts).toStrictEqual([]);
 	});
 
-	it("raises quotes_lost when the previous probe of a tier was quoted and the latest is not", () => {
-		const alerts = alertsFor({
-			...base,
-			lastTick: freshTick,
-			errorRunStart: null,
-			tiers: [
-				{
-					corridorId: A,
-					latest: reading("small", "declined", "2026-11-22T11:55:10.000Z"),
-					previous: reading("small", "quoted", "2026-11-22T07:20:10.000Z"),
-				},
-				{
-					corridorId: B,
-					latest: reading("small", "declined", "2026-11-22T11:55:20.000Z"),
-					previous: reading("small", "declined", "2026-11-22T07:20:20.000Z"),
-				},
-				{
-					corridorId: B,
-					latest: reading("large", "quoted", "2026-11-22T11:55:30.000Z"),
-					previous: null,
-				},
-			],
+	describe("quotes_lost", () => {
+		const lastQuote = (quotedAt: string, firstUnquotedAt: string | null = null) => ({
+			corridorId: A,
+			quotedAt: iso(quotedAt),
+			firstUnquotedAt: firstUnquotedAt === null ? null : iso(firstUnquotedAt),
 		});
-		expect(alerts).toStrictEqual([
-			{
-				kind: "quotes_lost",
-				severity: "critical",
-				corridorId: A,
-				message:
-					"The small tier was quoted at 2026-11-22T07:20:10.000Z and was declined at 2026-11-22T11:55:10.000Z.",
-				since: "2026-11-22T11:55:10.000Z",
-			},
-		]);
+		const lost = (params: {
+			readonly tiers: Parameters<typeof alertsFor>[0]["tiers"];
+			readonly lastQuotes: Parameters<typeof alertsFor>[0]["lastQuotes"];
+		}) =>
+			alertsFor({ ...base, lastTick: freshTick, errorRunStart: null, ...params }).filter(
+				(alert) => alert.kind === "quotes_lost",
+			);
+
+		it("is active while no probed tier is quoted and the last quote is recent", () => {
+			expect(
+				lost({
+					tiers: [
+						{ corridorId: A, latest: reading("small", "declined", "2026-11-22T11:55:10.000Z") },
+						{ corridorId: A, latest: reading("large", "silent", "2026-11-22T11:50:10.000Z") },
+					],
+					lastQuotes: [lastQuote("2026-11-22T07:20:10.000Z", "2026-11-22T07:25:10.000Z")],
+				}),
+			).toStrictEqual([
+				{
+					kind: "quotes_lost",
+					severity: "critical",
+					corridorId: A,
+					message: "No tier is quoted now. The last quote was at 2026-11-22T07:20:10.000Z.",
+					since: "2026-11-22T07:25:10.000Z",
+				},
+			]);
+		});
+
+		it("is quiet while one tier still quotes", () => {
+			expect(
+				lost({
+					tiers: [
+						{ corridorId: A, latest: reading("small", "declined", "2026-11-22T11:55:10.000Z") },
+						{ corridorId: A, latest: reading("large", "quoted", "2026-11-22T11:50:10.000Z") },
+					],
+					lastQuotes: [lastQuote("2026-11-22T11:50:10.000Z")],
+				}),
+			).toStrictEqual([]);
+		});
+
+		it("is quiet for a corridor never quoted", () => {
+			expect(
+				lost({
+					tiers: [
+						{ corridorId: B, latest: reading("small", "declined", "2026-11-22T11:55:20.000Z") },
+					],
+					lastQuotes: [],
+				}),
+			).toStrictEqual([]);
+		});
+
+		it("ends 7 days after the last quote", () => {
+			const tiers = [
+				{ corridorId: A, latest: reading("small", "declined", "2026-11-22T11:55:10.000Z") },
+			];
+			expect(lost({ tiers, lastQuotes: [lastQuote("2026-11-15T12:00:00.000Z")] })).toHaveLength(1);
+			expect(lost({ tiers, lastQuotes: [lastQuote("2026-11-15T11:59:59.999Z")] })).toStrictEqual(
+				[],
+			);
+		});
+
+		it("is active since the last quote when no later probe is known", () => {
+			const [alert] = lost({
+				tiers: [
+					{ corridorId: A, latest: reading("small", "declined", "2026-11-22T11:55:10.000Z") },
+				],
+				lastQuotes: [lastQuote("2026-11-22T07:20:10.000Z")],
+			});
+			expect(alert?.since).toBe("2026-11-22T07:20:10.000Z");
+		});
 	});
 
 	it("warns slow_quotes above the threshold and not at it", () => {
@@ -65,16 +108,15 @@ describe("alertsFor", () => {
 			...base,
 			lastTick: freshTick,
 			errorRunStart: null,
+			lastQuotes: [],
 			tiers: [
 				{
 					corridorId: A,
 					latest: reading("small", "quoted", "2026-11-22T11:55:10.000Z", { firstQuoteMs: 2501 }),
-					previous: null,
 				},
 				{
 					corridorId: B,
 					latest: reading("small", "quoted", "2026-11-22T11:55:10.000Z", { firstQuoteMs: 2500 }),
-					previous: null,
 				},
 			],
 		});
@@ -89,6 +131,7 @@ describe("alertsFor", () => {
 			lastTick: tick("2026-11-22T11:55:00.000Z", { completed: 4, gatewayErrors: 2 }),
 			errorRunStart: iso("2026-11-22T11:50:00.000Z"),
 			tiers: [],
+			lastQuotes: [],
 		});
 		expect(alerts).toStrictEqual([
 			{
@@ -107,6 +150,7 @@ describe("alertsFor", () => {
 			lastTick: tick("2026-11-22T11:55:00.000Z", { aborted: "defaults_unavailable", completed: 0 }),
 			errorRunStart: iso("2026-11-22T11:55:00.000Z"),
 			tiers: [],
+			lastQuotes: [],
 		});
 		expect(failed.map((alert) => alert.message)).toStrictEqual([
 			"The last tick could not read /v1/defaults.",
@@ -116,6 +160,7 @@ describe("alertsFor", () => {
 			lastTick: tick("2026-11-22T11:55:00.000Z", { completed: 5, gatewayErrors: 2 }),
 			errorRunStart: null,
 			tiers: [],
+			lastQuotes: [],
 		});
 		expect(fine).toStrictEqual([]);
 	});
@@ -125,11 +170,11 @@ describe("alertsFor", () => {
 			...base,
 			lastTick: null,
 			errorRunStart: null,
+			lastQuotes: [],
 			tiers: [
 				{
 					corridorId: A,
 					latest: reading("small", "quoted", "2026-11-22T11:55:10.000Z", { firstQuoteMs: 9000 }),
-					previous: null,
 				},
 			],
 		});
