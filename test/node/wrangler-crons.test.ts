@@ -37,17 +37,19 @@ function wranglerConfig(): { triggers?: { crons?: string[] }; vars?: Record<stri
 }
 
 describe("wrangler.jsonc Cron Triggers", () => {
-	it("are exactly the probe cron and the canary cron, two different expressions", () => {
+	it("are exactly the probe, canary and maintenance crons, three different expressions", () => {
 		const config = wranglerConfig();
 		const crons = config.triggers?.crons ?? [];
-		const probe = config.vars?.PROBE_CRON;
-		const canary = config.vars?.CANARY_CRON;
-		// scheduled() compares controller.cron with both, character for character, and
+		const named = [
+			config.vars?.PROBE_CRON,
+			config.vars?.CANARY_CRON,
+			config.vars?.MAINTENANCE_CRON,
+		];
+		// scheduled() compares controller.cron with each, character for character, and
 		// ignores any other trigger.
-		expect(probe).toEqual(expect.any(String));
-		expect(canary).toEqual(expect.any(String));
-		expect(probe).not.toBe(canary);
-		expect([...crons].sort()).toStrictEqual([probe, canary].sort());
+		for (const cron of named) expect(cron).toEqual(expect.any(String));
+		expect(new Set(named).size).toBe(3);
+		expect([...crons].sort()).toStrictEqual([...named].sort());
 	});
 
 	it("give the probe cron one fixed interval, which is the tick interval", () => {
@@ -77,6 +79,16 @@ describe("wrangler.jsonc Cron Triggers", () => {
 			const after = canaries.filter((m) => m > publish && m < publish + publishInterval);
 			expect(after.length, `publish at minute ${publish}`).toBeGreaterThan(0);
 		}
+	});
+
+	it("run maintenance once a day, at a minute with no publish and no canary", () => {
+		const vars = wranglerConfig().vars ?? {};
+		const [minute = -1, ...more] = minutesOfDay(vars.MAINTENANCE_CRON ?? "");
+		expect(more).toStrictEqual([]);
+		const tick = cronIntervalMinutes(vars.PROBE_CRON ?? "") ?? 0;
+		const every = Number(vars.PUBLISH_EVERY_TICKS ?? "1");
+		expect(minute % (tick * every), "a publish slot").not.toBe(0);
+		expect(minutesOfDay(vars.CANARY_CRON ?? "")).not.toContain(minute);
 	});
 
 	it("leave no separate tick interval to fall out of step with the cron", () => {

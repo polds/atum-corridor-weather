@@ -16,6 +16,7 @@ import {
 	scriptedFetch,
 } from "../support/fake-gateway";
 import { declinedWith, fixtures, type ProbeFixture, QUOTED_SETTLER } from "../support/fixtures";
+import { readRawExchanges } from "../support/raw";
 import { ONE_TARGET, postedRequestIds, testConfig, tickHarness } from "../support/tick";
 
 const SCHEDULED = Date.parse("2026-11-22T10:35:00.000Z");
@@ -77,7 +78,14 @@ describe("runTick", () => {
 			.first("raw_json");
 		const stored: unknown = typeof raw === "string" ? JSON.parse(raw) : null;
 		expect(stored).toMatchObject({ requestBody: { request_id: tick.probes[0]?.id } });
-		expect(stored).toHaveProperty("exchanges", tick.probes[0]?.raw);
+		expect(await readRawExchanges(tick.probes[0]?.id ?? "")).toStrictEqual(
+			tick.probes[0]?.raw.map(({ method, path, status, responseBody }) => ({
+				method,
+				path,
+				status,
+				responseBody,
+			})),
+		);
 		expect(String(raw)).toContain(QUOTED_SETTLER);
 
 		const snapshot = await store.readSnapshot("testnet");
@@ -198,22 +206,6 @@ describe("runTick", () => {
 		expect((await store.readSnapshot("testnet"))?.alerts).toStrictEqual([]);
 	});
 
-	it("drops raw exchanges older than the retention window", async () => {
-		await env.DB.prepare(
-			"INSERT INTO probe_raw (probe_id, created_at, raw_json) VALUES ('old', '2026-11-01T00:00:00.000Z', '{}')",
-		).run();
-		const { deps } = tickHarness({
-			startMs: SCHEDULED + 1000,
-			config: testConfig({ ...ONE_TARGET, RAW_RETENTION_DAYS: "14" }),
-			scenario: quotedEverywhere,
-		});
-		await runTick(deps, SCHEDULED);
-		const ids = await env.DB.prepare("SELECT probe_id FROM probe_raw").all();
-		expect(ids.results).toStrictEqual([
-			{ probe_id: "cw1.testnet.20261122T1035Z.7ae33acb9dd6.small" },
-		]);
-	});
-
 	it("stores each decline reason of a declined probe", async () => {
 		const { deps } = tickHarness({
 			startMs: SCHEDULED + 1000,
@@ -231,9 +223,12 @@ describe("runTick", () => {
 });
 
 describe("oversized gateway responses", () => {
-	/** The quoted fixture with an unknown field of `bytes` characters on every poll answer. */
+	/**
+	 * The quoted fixture with an unknown field of `bytes` characters on every poll
+	 * answer. Each answer's field differs, so no two bodies are the same.
+	 */
 	function padded(bytes: number, polls: number): ProbeFixture {
-		const pad = "x".repeat(bytes);
+		const pad = (poll: number) => `${poll}${"x".repeat(bytes)}`;
 		const [create, ...answers] = fixtures.quoted.events;
 		const last = answers.at(-1);
 		if (create === undefined || last === undefined) throw new Error("fixture has no events");
@@ -244,9 +239,9 @@ describe("oversized gateway responses", () => {
 				create,
 				...Array.from({ length: polls - 1 }, (_, index) => {
 					const event = collecting[Math.min(index, collecting.length - 1)] ?? last;
-					return { ...event, json: { ...(event.json as object), pad } };
+					return { ...event, json: { ...(event.json as object), pad: pad(index) } };
 				}),
-				{ ...last, json: { ...(last.json as object), pad } },
+				{ ...last, json: { ...(last.json as object), pad: pad(polls) } },
 			],
 		};
 	}

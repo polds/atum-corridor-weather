@@ -132,7 +132,34 @@ describe("scheduled handler", () => {
 		expect(await env.DB.prepare("SELECT count(*) AS n FROM ticks").first("n")).toBe(1);
 	});
 
-	it("does nothing on a cron that matches neither variable, and logs it", async () => {
+	it("runs maintenance, and neither a tick nor the canary, on the maintenance cron", async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		await env.DB.prepare(
+			"INSERT INTO probe_raw (probe_id, created_at, raw_json) VALUES ('cw1.testnet.20260101T0000Z.0.small', '2026-01-01T00:00:00.000Z', '{}')",
+		).run();
+		const sent = await runScheduled(
+			{ ...ONE_TARGET, ALERT_WEBHOOK_URL: HOOK },
+			env.MAINTENANCE_CRON,
+		);
+		expect(sent).toStrictEqual([]);
+		expect(info).toHaveBeenCalledWith(
+			expect.objectContaining({ event: "maintenance", rawDayDeleted: "2026-01-01" }),
+		);
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM probe_raw").first("n")).toBe(0);
+		expect(await env.DB.prepare("SELECT count(*) AS n FROM ticks").first("n")).toBe(0);
+	});
+
+	it("logs a maintenance run that throws instead of rejecting", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const broken = {
+			prepare: () => ({ bind: () => ({}) }),
+			batch: () => Promise.reject(new Error("D1 down")),
+		};
+		await runScheduled({ DB: broken }, env.MAINTENANCE_CRON);
+		expect(error).toHaveBeenCalledWith({ event: "maintenance_failed", error: "Error: D1 down" });
+	});
+
+	it("does nothing on a cron that matches no variable, and logs it", async () => {
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const sent = await runScheduled({ ...ONE_TARGET, ALERT_WEBHOOK_URL: HOOK }, "0 0 * * *");
 		expect(sent).toStrictEqual([]);

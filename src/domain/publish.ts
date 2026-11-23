@@ -7,6 +7,7 @@ import {
 	type Alert,
 	type CorridorConditions,
 	type CorridorHistory,
+	type DailyFigures,
 	type HealthReport,
 	SNAPSHOT_SCHEMA_VERSION,
 	type Snapshot,
@@ -175,6 +176,7 @@ export function buildHistory(params: {
 	readonly nowMs: number;
 	readonly days: number;
 	readonly readings: readonly TierReading[];
+	readonly daily: readonly DailyFigures[];
 }): CorridorHistory {
 	return {
 		schemaVersion: SNAPSHOT_SCHEMA_VERSION,
@@ -199,6 +201,10 @@ export function buildHistory(params: {
 				firstQuoteMs: reading.firstQuoteMs,
 				declines: reading.declines,
 			})),
+		daily: [...params.daily].sort(
+			(a, b) =>
+				compareText(a.day, b.day) || AMOUNT_TIERS.indexOf(a.tier) - AMOUNT_TIERS.indexOf(b.tier),
+		),
 	};
 }
 

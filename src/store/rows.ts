@@ -10,8 +10,12 @@ import {
 	namespaceOf,
 } from "../domain/brands";
 import { type AnnouncedAlert, isAlertKey } from "../domain/notify";
+import { dayAt, dayOfProbeId, isUtcDay, type UtcDay } from "../domain/retention";
 import {
 	type Alert,
+	type DailyDecline,
+	type DailyFigures,
+	type DailyRange,
 	SNAPSHOT_SCHEMA_VERSION,
 	type Snapshot,
 	type SnapshotDecline,
@@ -35,6 +39,8 @@ const chainId = z.string().refine(isChainId, "not a chain id");
 const corridorId = z.string().refine(isCorridorId, "not a corridor id");
 const tier = z.enum(AMOUNT_TIERS);
 const outcome = z.enum(OUTCOME_KINDS);
+const utcDay = z.string().refine(isUtcDay, "not a UTC day");
+const count = z.number().int().nonnegative();
 
 /** A TEXT column that holds JSON. */
 function jsonText<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>) {
@@ -266,4 +272,81 @@ export const announcedAlertRowSchema: z.ZodType<AnnouncedAlert, z.ZodTypeDef, un
 		corridorId: row.corridor_id,
 		since: row.since,
 		announcedAt: row.announced_at,
+	}));
+
+/** `MIN(id)` of a table keyed by probe id, read as the day of that probe's slot. */
+export const oldestProbeIdRowSchema = z.object({
+	id: z
+		.string()
+		.nullable()
+		.transform((id, context): UtcDay | null => {
+			if (id === null) return null;
+			const day = dayOfProbeId(id);
+			if (day === null) {
+				context.addIssue({ code: z.ZodIssueCode.custom, message: "not a probe id" });
+				return z.NEVER;
+			}
+			return day;
+		}),
+});
+
+/** `MIN(slot_start)` of `ticks`, read as its day. */
+export const oldestTickRowSchema = z.object({
+	slot_start: iso
+		.nullable()
+		.transform((start) => (start === null ? null : dayAt(Date.parse(start)))),
+});
+
+export const oldestFiguresRowSchema = z.object({ day: utcDay.nullable() });
+
+export const figuresDayRowSchema = z.object({ day: utcDay });
+
+const declineCountSchema: z.ZodType<DailyDecline, z.ZodTypeDef, unknown> = z.object({
+	reason: z.string(),
+	count,
+});
+
+/** A range is whole or absent: the three aggregates are null together. */
+function range(min: number | null, mean: number | null, max: number | null): DailyRange | null {
+	return min === null || mean === null || max === null ? null : { min, mean, max };
+}
+
+export const dailyRowSchema: z.ZodType<DailyFigures, z.ZodTypeDef, unknown> = z
+	.object({
+		day: utcDay,
+		tier,
+		probes: count,
+		quoted: count,
+		declined: count,
+		silent: count,
+		incomplete: count,
+		gateway_error: count,
+		best_spread_min_bps: z.number().nullable(),
+		best_spread_mean_bps: z.number().nullable(),
+		best_spread_max_bps: z.number().nullable(),
+		max_operator_count: count,
+		first_quote_min_ms: z.number().nullable(),
+		first_quote_mean_ms: z.number().nullable(),
+		first_quote_max_ms: z.number().nullable(),
+		declines_json: jsonText(z.array(declineCountSchema)),
+	})
+	.transform((row) => ({
+		day: row.day,
+		tier: row.tier,
+		probes: row.probes,
+		outcomes: {
+			quoted: row.quoted,
+			declined: row.declined,
+			silent: row.silent,
+			incomplete: row.incomplete,
+			gateway_error: row.gateway_error,
+		},
+		bestSpreadBps: range(
+			row.best_spread_min_bps,
+			row.best_spread_mean_bps,
+			row.best_spread_max_bps,
+		),
+		maxOperatorCount: row.max_operator_count,
+		firstQuoteMs: range(row.first_quote_min_ms, row.first_quote_mean_ms, row.first_quote_max_ms),
+		declines: row.declines_json,
 	}));

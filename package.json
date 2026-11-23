@@ -12,6 +12,7 @@
 		"dev": "pnpm run build:dashboard && wrangler dev --test-scheduled --var PUBLISH_EVERY_TICKS:1",
 		"tick": "node scripts/trigger-cron.mjs probe",
 		"canary": "node scripts/trigger-cron.mjs canary",
+		"maintenance": "node scripts/trigger-cron.mjs maintenance",
 		"build": "pnpm run build:dashboard && wrangler deploy --dry-run --outdir dist/worker",
 		"build:dashboard": "node scripts/build-dashboard.mjs",
 		"deploy": "pnpm run build:dashboard && node scripts/render-deploy-config.mjs && node .github/scripts/assert-testnet.mjs wrangler.deploy.jsonc && wrangler d1 migrations apply corridor-weather --remote --config wrangler.deploy.jsonc && wrangler deploy --config wrangler.deploy.jsonc",

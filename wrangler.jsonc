@@ -6,11 +6,12 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 	// The probe cron runs a tick. The canary cron, a few minutes after each publish,
-	// announces alert changes. scheduled() tells them apart by PROBE_CRON and CANARY_CRON
-	// and ignores any other trigger, so keep these two entries equal to those two vars.
-	// The tick interval is read from PROBE_CRON. To change the cadence, change these two
-	// entries, those two vars and PUBLISH_EVERY_TICKS, and nothing else.
-	"triggers": { "crons": ["*/2 * * * *", "2,12,22,32,42,52 * * * *"] },
+	// announces alert changes. The maintenance cron, once a day, reduces old probes to
+	// daily figures and deletes expired days. scheduled() tells them apart by PROBE_CRON,
+	// CANARY_CRON and MAINTENANCE_CRON and ignores any other trigger, so keep these three
+	// entries equal to those three vars. The tick interval is read from PROBE_CRON. To
+	// change the cadence, change the first two entries, their vars and PUBLISH_EVERY_TICKS.
+	"triggers": { "crons": ["*/2 * * * *", "2,12,22,32,42,52 * * * *", "37 3 * * *"] },
 	"assets": {
 		"directory": "dist/dashboard",
 		"binding": "ASSETS",
@@ -44,13 +45,20 @@
 		"POLL_INTERVAL_MS": "500",
 		"QUOTE_WINDOW_SECONDS": "3",
 		"SLOW_QUOTE_MS": "2500",
-		"RAW_RETENTION_DAYS": "14",
+		// Days kept besides today, deleted one day per maintenance run (docs/DESIGN.md,
+		// "Retention and long history"). Raw exchanges are the bulk of the database.
+		// PROBE_RETENTION_DAYS covers the 7 days quotes_lost looks back, plus one.
+		"RAW_RETENTION_DAYS": "3",
+		"PROBE_RETENTION_DAYS": "14",
+		"DAILY_RETENTION_DAYS": "180",
 		"CORRIDOR_FILTER": "",
 		"MAINNET_ACK": "",
 		"REPOSITORY_URL": "https://github.com/polds/atum-corridor-weather",
 		"PROBE_CRON": "*/2 * * * *",
 		// Two minutes after each publish, so the canary reads a fresh snapshot.
 		"CANARY_CRON": "2,12,22,32,42,52 * * * *",
+		// Once a day at 03:37 UTC: an odd minute, so no tick, publish or canary runs with it.
+		"MAINTENANCE_CRON": "37 3 * * *",
 		// ALERT_WEBHOOK_URL is a secret: `wrangler secret put ALERT_WEBHOOK_URL`.
 		"ALERT_WEBHOOK_FORMAT": "slack",
 		"ALERT_MIN_SEVERITY": "critical",

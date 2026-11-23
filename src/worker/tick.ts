@@ -31,8 +31,6 @@ type TickRun = Pick<
 	"corridors" | "corridorsHash" | "planned" | "unrepresentable" | "probes" | "aborted"
 >;
 
-const DAY_MS = 86_400_000;
-
 async function sha256Hex(text: string): Promise<Sha256Hex> {
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
 	const hex = [...new Uint8Array(digest)]
@@ -200,10 +198,7 @@ export async function runTick(deps: TickDeps, scheduledTimeMs: number): Promise<
 	const run = await probeSlot(deps, slot);
 	const finishedMs = deps.now();
 	const tick: TickRecord = { slot, startedAt, finishedAt: isoAt(finishedMs), ...run };
-	await deps.store.saveTick(tick, {
-		dropRawBefore:
-			config.rawRetentionDays === 0 ? null : isoAt(finishedMs - config.rawRetentionDays * DAY_MS),
-	});
+	await deps.store.saveTick(tick);
 	if (slot.index % config.publishEveryTicks === 0) await publishSnapshot(deps);
 	return tick;
 }

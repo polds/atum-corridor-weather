@@ -1,7 +1,15 @@
 import type { LastQuote, TierLatest } from "../domain/alerts";
+import { isoAt } from "../domain/brands";
 import { type AnnouncedAlert, alertKeyOf, type NotificationPlan } from "../domain/notify";
 import { readingOf } from "../domain/publish";
-import type { Snapshot, SnapshotTick, TierReading } from "../domain/snapshot";
+import {
+	addDays,
+	dayStartMs,
+	type OldestDays,
+	probeIdRange,
+	type UtcDay,
+} from "../domain/retention";
+import type { DailyFigures, Snapshot, SnapshotTick, TierReading } from "../domain/snapshot";
 import type {
 	AmountTier,
 	Corridor,
@@ -15,8 +23,13 @@ import type {
 import {
 	announcedAlertRowSchema,
 	corridorRowSchema,
+	dailyRowSchema,
 	errorRunRowSchema,
+	figuresDayRowSchema,
 	lastQuoteRowSchema,
+	oldestFiguresRowSchema,
+	oldestProbeIdRowSchema,
+	oldestTickRowSchema,
 	probeRowSchema,
 	snapshotPartRowSchema,
 	snapshotRowSchema,
@@ -35,6 +48,14 @@ export interface SnapshotSource {
 	readonly errorRunStart: IsoTimestamp | null;
 }
 
+/** What a store call cost, as D1 reports it in `meta`. */
+export interface D1Usage {
+	readonly rowsRead: number;
+	readonly rowsWritten: number;
+	/** The size of the database after the call, as D1 reports it in `meta.size_after`. */
+	readonly databaseBytes: number;
+}
+
 export interface Store {
 	/**
 	 * Stores the tick, its corridors and its probes in one batch. A tick or probe
@@ -42,10 +63,43 @@ export interface Store {
 	 * are upserted, with their hash, only when `corridorsHash` differs from the
 	 * stored one, so an unchanged list costs no write.
 	 */
-	saveTick(
-		tick: TickRecord,
-		options: { readonly dropRawBefore: IsoTimestamp | null },
-	): Promise<void>;
+	saveTick(tick: TickRecord): Promise<void>;
+	/** The oldest stored day of probes, ticks, raw exchanges and daily figures. */
+	readOldestDays(
+		network: Network,
+	): Promise<{ readonly oldest: OldestDays; readonly usage: D1Usage }>;
+	/**
+	 * Writes the daily figures of the first `limit` of `candidates` that have
+	 * probes and no figures yet, each computed inside D1 from that day's probes.
+	 * Returns those days, oldest first.
+	 */
+	writeDailyFigures(
+		network: Network,
+		candidates: readonly UtcDay[],
+		limit: number,
+	): Promise<{ readonly days: readonly UtcDay[]; readonly usage: D1Usage }>;
+	/**
+	 * Deletes the probes, declines, raw exchanges and ticks of `day`. A day that
+	 * has probes and no figures keeps everything.
+	 */
+	deleteProbeDay(
+		network: Network,
+		day: UtcDay,
+	): Promise<{ readonly deleted: boolean; readonly usage: D1Usage }>;
+	deleteRawDay(
+		network: Network,
+		day: UtcDay,
+	): Promise<{ readonly deleted: boolean; readonly usage: D1Usage }>;
+	deleteFiguresDay(
+		network: Network,
+		day: UtcDay,
+	): Promise<{ readonly deleted: boolean; readonly usage: D1Usage }>;
+	/** The daily figures of one corridor on `days`, in no particular order. */
+	readDailyFigures(
+		network: Network,
+		corridorId: CorridorId,
+		days: readonly UtcDay[],
+	): Promise<DailyFigures[]>;
 	/** Readings of `tiers` only, so a tier removed from the config leaves the snapshot. */
 	readSnapshotSource(network: Network, tiers: readonly AmountTier[]): Promise<SnapshotSource>;
 	saveSnapshot(snapshot: Snapshot): Promise<void>;
@@ -280,41 +334,65 @@ function byteLength(text: string): number {
 	return new TextEncoder().encode(text).byteLength;
 }
 
-/** An exchange as `probe_raw` keeps it: a response body over the raw budget becomes a marker. */
-type StoredExchange =
-	| RawExchange
-	| (Omit<RawExchange, "responseBody"> & {
-			readonly responseBody: { readonly truncated: true; readonly bytes: number };
-	  });
+/**
+ * A response body as `probe_raw` keeps it: the text, null when none was read, a
+ * marker with the UTF-8 size of a body cut for the raw budget, or the index of
+ * the exchange that holds the same text.
+ */
+type StoredBody =
+	| string
+	| null
+	| { readonly truncated: true; readonly bytes: number }
+	| { readonly sameAs: number };
 
-/** The exchange with its response body replaced by a marker that keeps the body's UTF-8 size. */
-function truncated(exchange: RawExchange): StoredExchange {
-	if (exchange.responseBody === null) return exchange;
-	return {
-		...exchange,
-		responseBody: { truncated: true, bytes: byteLength(exchange.responseBody) },
-	};
+type StoredExchange = Omit<RawExchange, "responseBody"> & { readonly responseBody: StoredBody };
+
+/**
+ * The exchanges as stored. The bodies at the indexes `cut` names become cut
+ * markers. A kept body equal to the kept body of the exchange before it becomes
+ * `{ sameAs }`, the index of the first exchange of that run, which holds the text.
+ */
+function storedExchanges(
+	exchanges: readonly RawExchange[],
+	cut: (index: number) => boolean,
+): StoredExchange[] {
+	let holder = -1;
+	return exchanges.map((exchange, index): StoredExchange => {
+		const body = exchange.responseBody;
+		if (body === null) {
+			holder = -1;
+			return exchange;
+		}
+		if (cut(index)) {
+			holder = -1;
+			return { ...exchange, responseBody: { truncated: true, bytes: byteLength(body) } };
+		}
+		if (holder >= 0 && exchanges[index - 1]?.responseBody === body) {
+			return { ...exchange, responseBody: { sameAs: holder } };
+		}
+		holder = index;
+		return exchange;
+	});
 }
 
 /**
- * The probe's raw exchanges within `RAW_BUDGET_BYTES`. Over budget, the response
- * bodies between the first and the last exchange are cut; if that is not
- * enough, those two are cut as well.
+ * The probe's raw exchanges within `RAW_BUDGET_BYTES`, a repeated body stored
+ * once. Over budget, the response bodies between the first and the last
+ * exchange are cut; if that is not enough, those two are cut as well.
  */
 function rawJson(probe: ProbeRecord): string {
 	const created = probe.raw.find((exchange) => exchange.method === "POST");
-	const text = (exchanges: readonly StoredExchange[]) =>
-		JSON.stringify({ requestBody: created?.requestBody ?? null, exchanges });
-	const whole = text(probe.raw);
-	if (byteLength(whole) <= RAW_BUDGET_BYTES) return whole;
 	const last = probe.raw.length - 1;
-	const ends = text(
-		probe.raw.map((exchange, index) =>
-			index === 0 || index === last ? exchange : truncated(exchange),
-		),
-	);
+	const text = (cut: (index: number) => boolean) =>
+		JSON.stringify({
+			requestBody: created?.requestBody ?? null,
+			exchanges: storedExchanges(probe.raw, cut),
+		});
+	const whole = text(() => false);
+	if (byteLength(whole) <= RAW_BUDGET_BYTES) return whole;
+	const ends = text((index) => index !== 0 && index !== last);
 	if (byteLength(ends) <= RAW_BUDGET_BYTES) return ends;
-	return text(probe.raw.map(truncated));
+	return text(() => true);
 }
 
 function rawRow(probe: ProbeRecord): RowOf<typeof RAW_COLUMNS> {
@@ -367,9 +445,81 @@ const ERROR_RUN_START = `SELECT MIN(slot_start) AS since FROM ticks WHERE networ
 	AND slot_start > COALESCE(
 		(SELECT MAX(slot_start) FROM ticks WHERE network = ?1 AND NOT ${ERRORED_TICK}), '')`;
 
+/**
+ * The probes of one day: the ids in [`?3`, `?4`), which `probeIdRange` makes
+ * the day `?2` of network `?1`. The range alone selects them. A `network = ?1`
+ * term would lead SQLite to scan every probe of the network through `probes_latest`.
+ */
+const DAY_PROBES = "SELECT * FROM probes WHERE id >= ?3 AND id < ?4";
+
+/**
+ * The daily figures of one day, computed from its probes and their declines in
+ * one statement. Each probe and decline row of the day is read once per pass.
+ */
+const WRITE_FIGURES = `INSERT INTO daily_stats (network, day, corridor_id, tier, probes,
+		quoted, declined, silent, incomplete, gateway_error,
+		best_spread_min_bps, best_spread_mean_bps, best_spread_max_bps, max_operator_count,
+		first_quote_min_ms, first_quote_mean_ms, first_quote_max_ms, declines_json)
+	WITH day AS (${DAY_PROBES}),
+	reasons AS (
+		SELECT corridor_id, tier, json_group_array(json_object('reason', reason, 'count', count)) AS declines_json
+		FROM (SELECT p.corridor_id, p.tier, d.reason, SUM(d.count) AS count
+			FROM day AS p JOIN probe_declines AS d ON d.probe_id = p.id
+			GROUP BY p.corridor_id, p.tier, d.reason
+			ORDER BY p.corridor_id, p.tier, d.reason)
+		GROUP BY corridor_id, tier)
+	SELECT ?1, ?2, p.corridor_id, p.tier, COUNT(*),
+		SUM(p.outcome = 'quoted'), SUM(p.outcome = 'declined'), SUM(p.outcome = 'silent'),
+		SUM(p.outcome = 'incomplete'), SUM(p.outcome = 'gateway_error'),
+		MIN(p.best_spread_bps), AVG(p.best_spread_bps), MAX(p.best_spread_bps), MAX(p.operator_count),
+		MIN(p.first_quote_ms), AVG(p.first_quote_ms), MAX(p.first_quote_ms),
+		COALESCE(MAX(r.declines_json), '[]')
+	FROM day AS p LEFT JOIN reasons AS r ON r.corridor_id = p.corridor_id AND r.tier = p.tier
+	WHERE true
+	GROUP BY p.corridor_id, p.tier
+	ON CONFLICT (network, day, corridor_id, tier) DO UPDATE SET
+		probes = excluded.probes, quoted = excluded.quoted, declined = excluded.declined,
+		silent = excluded.silent, incomplete = excluded.incomplete,
+		gateway_error = excluded.gateway_error,
+		best_spread_min_bps = excluded.best_spread_min_bps,
+		best_spread_mean_bps = excluded.best_spread_mean_bps,
+		best_spread_max_bps = excluded.best_spread_max_bps,
+		max_operator_count = excluded.max_operator_count,
+		first_quote_min_ms = excluded.first_quote_min_ms,
+		first_quote_mean_ms = excluded.first_quote_mean_ms,
+		first_quote_max_ms = excluded.first_quote_max_ms,
+		declines_json = excluded.declines_json`;
+
+/** Of the candidate days `?2` (`[{day, from, to}]`), the first `?3` that have probes and no figures. */
+const DAYS_WITHOUT_FIGURES = `SELECT json_extract(c.value, '$.day') AS day FROM json_each(?2) AS c
+	WHERE EXISTS (SELECT 1 FROM probes
+			WHERE id >= json_extract(c.value, '$.from') AND id < json_extract(c.value, '$.to'))
+		AND NOT EXISTS (SELECT 1 FROM daily_stats
+			WHERE network = ?1 AND day = json_extract(c.value, '$.day'))
+	ORDER BY day LIMIT ?3`;
+
+/**
+ * True when the day of probe ids [`?1`, `?2`) of network `?3` may be deleted: it
+ * has figures for day `?4`, or it has no probes. Uncorrelated, so D1 reads it once.
+ */
+const PROBE_DAY_DELETABLE = `(EXISTS (SELECT 1 FROM daily_stats WHERE network = ?3 AND day = ?4)
+	OR NOT EXISTS (SELECT 1 FROM probes WHERE id >= ?1 AND id < ?2))`;
+
+function usageOf(results: readonly D1Result[]): D1Usage {
+	return {
+		rowsRead: results.reduce((sum, result) => sum + result.meta.rows_read, 0),
+		rowsWritten: results.reduce((sum, result) => sum + result.meta.rows_written, 0),
+		databaseBytes: results.at(-1)?.meta.size_after ?? 0,
+	};
+}
+
+function changed(results: readonly D1Result[]): boolean {
+	return results.some((result) => result.meta.changes > 0);
+}
+
 export function createStore(db: D1Database): Store {
 	return {
-		async saveTick(tick, { dropRawBefore }) {
+		async saveTick(tick) {
 			const { network, start } = tick.slot;
 			const probes = tick.probes;
 			const hash = tick.corridorsHash;
@@ -441,9 +591,6 @@ export function createStore(db: D1Database): Store {
 					conflict: ["probe_id"],
 					rows: probes.map(rawRow),
 				}),
-				...(dropRawBefore === null
-					? []
-					: [db.prepare("DELETE FROM probe_raw WHERE created_at < ?1").bind(dropRawBefore)]),
 			];
 			await db.batch(statements);
 		},
@@ -516,6 +663,97 @@ export function createStore(db: D1Database): Store {
 				.bind(network, corridorId, since)
 				.all();
 			return results.map((row) => probeRowSchema.parse(row).reading);
+		},
+
+		async readOldestDays(network) {
+			const { from, to } = probeIdRange(network, null);
+			const results = await db.batch([
+				db.prepare("SELECT MIN(id) AS id FROM probes WHERE id >= ?1 AND id < ?2").bind(from, to),
+				db
+					.prepare("SELECT MIN(slot_start) AS slot_start FROM ticks WHERE network = ?1")
+					.bind(network),
+				db
+					.prepare(
+						"SELECT MIN(probe_id) AS id FROM probe_raw WHERE probe_id >= ?1 AND probe_id < ?2",
+					)
+					.bind(from, to),
+				db.prepare("SELECT MIN(day) AS day FROM daily_stats WHERE network = ?1").bind(network),
+			]);
+			const [probes, ticks, raw, figures] = results.map((result) => result.results[0]);
+			return {
+				oldest: {
+					probes: oldestProbeIdRowSchema.parse(probes).id,
+					ticks: oldestTickRowSchema.parse(ticks).slot_start,
+					raw: oldestProbeIdRowSchema.parse(raw).id,
+					figures: oldestFiguresRowSchema.parse(figures).day,
+				},
+				usage: usageOf(results),
+			};
+		},
+
+		async writeDailyFigures(network, candidates, limit) {
+			const pending = await db
+				.prepare(DAYS_WITHOUT_FIGURES)
+				.bind(
+					network,
+					JSON.stringify(candidates.map((day) => ({ day, ...probeIdRange(network, day) }))),
+					limit,
+				)
+				.all();
+			const days = pending.results.map((row) => figuresDayRowSchema.parse(row).day);
+			if (days.length === 0) return { days, usage: usageOf([pending]) };
+			const results = await db.batch(
+				days.map((day) => {
+					const { from, to } = probeIdRange(network, day);
+					return db.prepare(WRITE_FIGURES).bind(network, day, from, to);
+				}),
+			);
+			return { days, usage: usageOf([pending, ...results]) };
+		},
+
+		async deleteProbeDay(network, day) {
+			const { from, to } = probeIdRange(network, day);
+			const guard = [from, to, network, day] as const;
+			const deletable = (sql: string) => db.prepare(`${sql} AND ${PROBE_DAY_DELETABLE}`);
+			const results = await db.batch([
+				deletable("DELETE FROM probe_declines WHERE probe_id >= ?1 AND probe_id < ?2").bind(
+					...guard,
+				),
+				deletable("DELETE FROM probe_raw WHERE probe_id >= ?1 AND probe_id < ?2").bind(...guard),
+				deletable(
+					"DELETE FROM ticks WHERE network = ?3 AND slot_start >= ?5 AND slot_start < ?6",
+				).bind(...guard, isoAt(dayStartMs(day)), isoAt(dayStartMs(addDays(day, 1)))),
+				deletable("DELETE FROM probes WHERE id >= ?1 AND id < ?2").bind(...guard),
+			]);
+			return { deleted: changed(results), usage: usageOf(results) };
+		},
+
+		async deleteRawDay(network, day) {
+			const { from, to } = probeIdRange(network, day);
+			const result = await db
+				.prepare("DELETE FROM probe_raw WHERE probe_id >= ?1 AND probe_id < ?2")
+				.bind(from, to)
+				.run();
+			return { deleted: changed([result]), usage: usageOf([result]) };
+		},
+
+		async deleteFiguresDay(network, day) {
+			const result = await db
+				.prepare("DELETE FROM daily_stats WHERE network = ?1 AND day = ?2")
+				.bind(network, day)
+				.run();
+			return { deleted: changed([result]), usage: usageOf([result]) };
+		},
+
+		async readDailyFigures(network, corridorId, days) {
+			const { results } = await db
+				.prepare(
+					`SELECT * FROM daily_stats WHERE network = ?1
+					AND day IN (SELECT value FROM json_each(?2)) AND corridor_id = ?3`,
+				)
+				.bind(network, JSON.stringify(days), corridorId)
+				.all();
+			return results.map((row) => dailyRowSchema.parse(row));
 		},
 
 		async readAnnouncedAlerts(network) {

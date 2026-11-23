@@ -4,6 +4,7 @@ import { createWebhookSender } from "../notify/webhook";
 import { createStore } from "../store/store";
 import { runCanary } from "./canary";
 import { type Config, parseConfig } from "./config";
+import { runMaintenance } from "./maintenance";
 import { handleRequest } from "./routes";
 import { runTick } from "./tick";
 
@@ -61,9 +62,9 @@ async function canary(config: Config, env: Env): Promise<void> {
 }
 
 /**
- * The probe cron runs a tick and the canary cron announces alert changes. Any
- * other cron does nothing, so a mistyped variable cannot add probe traffic.
- * Never rejects.
+ * The probe cron runs a tick, the canary cron announces alert changes and the
+ * maintenance cron reduces and deletes old days. Any other cron does nothing, so
+ * a mistyped variable cannot add probe traffic. Never rejects.
  */
 async function scheduled(controller: ScheduledController, env: Env): Promise<void> {
 	const parsed = parseConfig(env);
@@ -82,6 +83,13 @@ async function scheduled(controller: ScheduledController, env: Env): Promise<voi
 			await canary(config, env).catch((error: unknown) => {
 				console.error({ event: "canary_failed", error: String(error) });
 			});
+			return;
+		case config.maintenanceCron:
+			await runMaintenance({ config, store: createStore(env.DB), now: () => Date.now() }).catch(
+				(error: unknown) => {
+					console.error({ event: "maintenance_failed", error: String(error) });
+				},
+			);
 			return;
 		default:
 			console.error({ event: "unknown_cron", cron: controller.cron });

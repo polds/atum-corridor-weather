@@ -9,6 +9,7 @@ const TABLES = [
 	"probe_raw",
 	"snapshots",
 	"alert_notifications",
+	"daily_stats",
 ];
 
 export async function clearTables(): Promise<void> {

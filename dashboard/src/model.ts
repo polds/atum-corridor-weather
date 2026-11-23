@@ -7,6 +7,9 @@ import type {
 	Condition,
 	CorridorConditions,
 	CorridorHistory,
+	DailyDecline,
+	DailyFigures,
+	DailyRange,
 	HistoryPoint,
 	Snapshot,
 	SnapshotAsset,
@@ -180,12 +183,34 @@ function isSnapshotDocument(v: unknown): v is SnapshotDocument {
 	);
 }
 
+/** A history published before daily figures existed has no `daily`; it reads as none. */
 export function parseHistory(json: unknown): Parsed<CorridorHistory> {
 	const mismatch = schemaMismatch(json);
 	if (mismatch !== null) return { ok: false, reason: mismatch };
-	if (isHistoryDocument(json)) return { ok: true, value: json };
+	const document = isRecord(json) && json.daily === undefined ? { ...json, daily: [] } : json;
+	if (isHistoryDocument(document)) return { ok: true, value: document };
 	return { ok: false, reason: "the history does not have the expected shape" };
 }
+
+const isDailyRange = (v: unknown): v is DailyRange =>
+	isRecord(v) && isNumber(v.min) && isNumber(v.mean) && isNumber(v.max);
+
+const isOutcomeCounts = (v: unknown): v is DailyFigures["outcomes"] =>
+	isRecord(v) && OUTCOMES.every((outcome) => isCount(v[outcome]));
+
+const isDailyDecline = (v: unknown): v is DailyDecline =>
+	isRecord(v) && isString(v.reason) && isCount(v.count);
+
+const isDailyFigures = (v: unknown): v is DailyFigures =>
+	isRecord(v) &&
+	isString(v.day) &&
+	isTier(v.tier) &&
+	isCount(v.probes) &&
+	isOutcomeCounts(v.outcomes) &&
+	orNull(isDailyRange)(v.bestSpreadBps) &&
+	isCount(v.maxOperatorCount) &&
+	orNull(isDailyRange)(v.firstQuoteMs) &&
+	arrayOf(isDailyDecline)(v.declines);
 
 function isHistoryDocument(v: unknown): v is CorridorHistory {
 	return (
@@ -195,7 +220,8 @@ function isHistoryDocument(v: unknown): v is CorridorHistory {
 		isString(v.corridorId) &&
 		isTimestamp(v.generatedAt) &&
 		isNumber(v.days) &&
-		arrayOf(isHistoryPoint)(v.points)
+		arrayOf(isHistoryPoint)(v.points) &&
+		arrayOf(isDailyFigures)(v.daily)
 	);
 }
 

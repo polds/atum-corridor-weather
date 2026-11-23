@@ -5,6 +5,7 @@
  * Nothing here names a settlement operator. Operator addresses stay in the
  * store until publishing them is agreed (docs/DESIGN.md, open question 4).
  */
+import type { UtcDay } from "./retention";
 import type {
 	AmountTier,
 	AssetId,
@@ -113,14 +114,60 @@ export interface HistoryPoint {
 	readonly declines: readonly SnapshotDecline[];
 }
 
+/** Lowest, mean and highest of one measure over the probes of a day that have a value for it. */
+export interface DailyRange {
+	readonly min: number;
+	readonly mean: number;
+	readonly max: number;
+}
+
+/** One decline reason over a day. */
+export interface DailyDecline {
+	/** A published decline code, or `OTHER`, as in `SnapshotDecline`. */
+	readonly reason: string;
+	/** The sum of this reason's `count` over the day's probes: how many declines gave it. */
+	readonly count: number;
+}
+
+/**
+ * One UTC day of one corridor tier, reduced from that day's probes. The probes
+ * are deleted after a few days; these figures are kept for months. Counts only,
+ * so no operator is named.
+ */
+export interface DailyFigures {
+	/** `YYYY-MM-DD`, the UTC day of the probes' slot start. */
+	readonly day: UtcDay;
+	readonly tier: AmountTier;
+	/** Probes of this tier on this day. */
+	readonly probes: number;
+	/** Probes by outcome. The five counts add up to `probes`. */
+	readonly outcomes: Readonly<Record<ProbeOutcomeKind, number>>;
+	/** `bestSpreadBps` of the day's probes that have one. Null when none has. */
+	readonly bestSpreadBps: DailyRange | null;
+	/** The highest `operatorCount` of any probe of the day. */
+	readonly maxOperatorCount: number;
+	/** `firstQuoteMs` of the day's probes that have one. Null when none has. */
+	readonly firstQuoteMs: DailyRange | null;
+	/** Ordered by reason. Empty when no probe of the day was declined. */
+	readonly declines: readonly DailyDecline[];
+}
+
 export interface CorridorHistory {
 	readonly schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
 	readonly network: Network;
 	readonly corridorId: CorridorId;
 	readonly generatedAt: IsoTimestamp;
+	/** The days `points` covers, counted back from `generatedAt`. */
 	readonly days: number;
-	/** Oldest first. */
+	/** Every probe of the last `days` days. Oldest first. */
 	readonly points: readonly HistoryPoint[];
+	/**
+	 * Daily figures of every tier, oldest day first, then small, typical, large.
+	 * They cover up to `DAILY_RETENTION_DAYS` complete days before `generatedAt`;
+	 * a day with no probe of a tier has no entry for it. Absent from documents
+	 * published before daily figures existed.
+	 */
+	readonly daily: readonly DailyFigures[];
 }
 
 export interface HealthReport {

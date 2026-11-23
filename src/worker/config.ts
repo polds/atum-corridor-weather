@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { QUOTES_LOST_WINDOW_DAYS } from "../domain/alerts";
 import { cronIntervalMinutes } from "../domain/cron";
+import type { Retention } from "../domain/retention";
 import { probesPlannedPerTick, SUBREQUEST_RESERVE, type TierAmounts } from "../domain/schedule";
 import type { AlertSeverity } from "../domain/snapshot";
 import { AMOUNT_TIERS, type Network } from "../domain/types";
@@ -70,12 +72,17 @@ export interface Config {
 	readonly quoteWindowSeconds: number;
 	readonly slowQuoteMs: number;
 	readonly corridorFilter: RegExp | null;
-	/** Days `probe_raw` keeps a probe. 0 keeps every probe. */
-	readonly rawRetentionDays: number;
+	/**
+	 * Days the maintenance cron keeps raw exchanges, probes (with their declines
+	 * and ticks) and daily figures, besides today. `rawDays <= probeDays <= dailyDays`.
+	 */
+	readonly retention: Retention;
 	/** `controller.cron` of the probe Cron Trigger, character for character. */
 	readonly probeCron: string;
 	/** `controller.cron` of the canary Cron Trigger, character for character. Not `probeCron`. */
 	readonly canaryCron: string;
+	/** `controller.cron` of the daily maintenance Cron Trigger. Neither of the other two. */
+	readonly maintenanceCron: string;
 	/** Null when `ALERT_WEBHOOK_URL` is unset: the canary only logs. */
 	readonly alertWebhook: AlertWebhook | null;
 	readonly alertMinSeverity: AlertSeverity;
@@ -200,9 +207,12 @@ const envSchema = z
 		QUOTE_WINDOW_SECONDS: integer(1, 60),
 		SLOW_QUOTE_MS: integer(0, 600_000),
 		CORRIDOR_FILTER: corridorFilter,
-		RAW_RETENTION_DAYS: integer(0, 3650).default("14"),
+		RAW_RETENTION_DAYS: integer(1, 3650).default("3"),
+		PROBE_RETENTION_DAYS: integer(1, 3650).default("14"),
+		DAILY_RETENTION_DAYS: integer(1, 3650).default("180"),
 		PROBE_CRON: cron,
 		CANARY_CRON: cron,
+		MAINTENANCE_CRON: cron,
 		ALERT_WEBHOOK_URL: alertWebhookUrl,
 		ALERT_WEBHOOK_FORMAT: oneOf(["slack", "json"]).default("slack"),
 		ALERT_MIN_SEVERITY: oneOf(["critical", "warning"]).default("critical"),
@@ -221,6 +231,37 @@ const envSchema = z
 				code: z.ZodIssueCode.custom,
 				path: ["CANARY_CRON"],
 				message: "must differ from PROBE_CRON, or every canary run would also be a tick",
+			});
+		}
+		if (env.MAINTENANCE_CRON === env.PROBE_CRON || env.MAINTENANCE_CRON === env.CANARY_CRON) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["MAINTENANCE_CRON"],
+				message: "must differ from PROBE_CRON and CANARY_CRON, or one trigger would run two jobs",
+			});
+		}
+		// quotes_lost looks this far back in the probes, from any moment of a day.
+		const minProbeDays = QUOTES_LOST_WINDOW_DAYS + 1;
+		if (env.PROBE_RETENTION_DAYS < minProbeDays) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["PROBE_RETENTION_DAYS"],
+				message: `must be at least ${minProbeDays}, because quotes_lost looks back ${QUOTES_LOST_WINDOW_DAYS} days in the probes`,
+			});
+		}
+		if (env.RAW_RETENTION_DAYS > env.PROBE_RETENTION_DAYS) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["RAW_RETENTION_DAYS"],
+				message: "must not be above PROBE_RETENTION_DAYS: a day's raw exchanges go with its probes",
+			});
+		}
+		if (env.DAILY_RETENTION_DAYS < env.PROBE_RETENTION_DAYS) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["DAILY_RETENTION_DAYS"],
+				message:
+					"must not be below PROBE_RETENTION_DAYS, or the figures of a day would expire while its probes remain and be written again",
 			});
 		}
 		if (env.NETWORK === "mainnet" && env.MAINNET_ACK !== MAINNET_ACK) {
@@ -291,9 +332,14 @@ export function parseConfig(env: unknown): ConfigResult {
 			quoteWindowSeconds: value.QUOTE_WINDOW_SECONDS,
 			slowQuoteMs: value.SLOW_QUOTE_MS,
 			corridorFilter: value.CORRIDOR_FILTER,
-			rawRetentionDays: value.RAW_RETENTION_DAYS,
+			retention: {
+				rawDays: value.RAW_RETENTION_DAYS,
+				probeDays: value.PROBE_RETENTION_DAYS,
+				dailyDays: value.DAILY_RETENTION_DAYS,
+			},
 			probeCron: value.PROBE_CRON,
 			canaryCron: value.CANARY_CRON,
+			maintenanceCron: value.MAINTENANCE_CRON,
 			alertWebhook:
 				value.ALERT_WEBHOOK_URL === null
 					? null

@@ -615,5 +615,7 @@ export function buildHistory(
 		generatedAt: iso(generatedAt),
 		days,
 		points,
+		// The dashboard does not show daily figures yet.
+		daily: [],
 	};
 }
