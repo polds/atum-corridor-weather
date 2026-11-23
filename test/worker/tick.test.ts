@@ -7,7 +7,13 @@ import { createStore } from "../../src/store/store";
 import type { Config } from "../../src/worker/config";
 import { runTick, type TickDeps } from "../../src/worker/tick";
 import { clearTables } from "../support/db";
-import { FakeClock, type Handler, jsonResponse, scriptedFetch } from "../support/fake-gateway";
+import {
+	FakeClock,
+	type Handler,
+	jsonResponse,
+	SUBREQUEST_REFUSAL,
+	scriptedFetch,
+} from "../support/fake-gateway";
 import { declinedWith, fixtures, type ProbeFixture, QUOTED_SETTLER } from "../support/fixtures";
 import { ONE_TARGET, postedRequestIds, testConfig, tickHarness } from "../support/tick";
 
@@ -740,14 +746,14 @@ describe("the subrequest budget", () => {
 			// Like the platform: past a number of subrequests, every later fetch throws.
 			wrap: (handler) => (request) => {
 				sent += 1;
-				if (sent > 1 + 2 * 7 + 3) throw new Error("Too many subrequests.");
+				if (sent > 1 + 2 * 7 + 3) throw new Error(SUBREQUEST_REFUSAL);
 				return handler(request);
 			},
 		});
 		const tick = await runTick(deps, SCHEDULED);
 		expect(tick.aborted).toMatchObject({
 			reason: "subrequest_limit",
-			message: expect.stringContaining("Too many subrequests."),
+			message: expect.stringContaining(SUBREQUEST_REFUSAL),
 		});
 		expect(tick.planned).toBe(4);
 		expect(tick.probes.map((probe) => probe.outcome.kind)).toStrictEqual(["quoted", "quoted"]);

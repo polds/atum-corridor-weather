@@ -80,6 +80,10 @@ export function replay(fixture: ProbeFixture, clock: FakeClock): Handler {
 	};
 }
 
+/** The error Cloudflare threw on a deployed Worker that passed the Workers Free subrequest limit, 2026-11-23. */
+export const SUBREQUEST_REFUSAL =
+	"Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits";
+
 export type Scenario = (requestId: string) => ProbeFixture | Response;
 
 /**

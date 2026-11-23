@@ -54,8 +54,8 @@ export function requestsPerProbe(params: {
 
 /**
  * Whether a transport failure is the Workers platform refusing the request for
- * passing the subrequest limit. Cloudflare's text is believed to be "Too many
- * subrequests." That is unverified: the limit cannot be reproduced locally.
+ * passing the subrequest limit. On a deployed Worker the error read "Too many
+ * subrequests by single Worker invocation." (2026-11-23).
  */
 function isSubrequestRefusal(failure: GatewayFailure): boolean {
 	return failure.kind === "transport" && /subrequest/i.test(failure.message);

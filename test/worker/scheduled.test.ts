@@ -7,7 +7,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/worker/index";
 import { clearTables } from "../support/db";
-import { jsonResponse } from "../support/fake-gateway";
+import { jsonResponse, SUBREQUEST_REFUSAL } from "../support/fake-gateway";
 import { fixtures } from "../support/fixtures";
 import { ONE_TARGET } from "../support/tick";
 
@@ -29,7 +29,7 @@ function fakeFetch(refuseAfter = Number.POSITIVE_INFINITY): Request[] {
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 		const request = new Request(input, init);
 		sent.push(request);
-		if (sent.length > refuseAfter) throw new Error("Too many subrequests.");
+		if (sent.length > refuseAfter) throw new Error(SUBREQUEST_REFUSAL);
 		const { pathname } = new URL(request.url);
 		if (pathname === "/hook") return new Response("ok");
 		if (pathname === "/v1/defaults") return jsonResponse(200, fixtures.testnetDefaults);

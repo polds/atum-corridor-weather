@@ -14,14 +14,14 @@ A Cloudflare Worker runs on a cron schedule. Each run is a tick. A tick does fiv
 2. It picks the next batch of probe targets. A probe target is one corridor at one amount tier.
 3. It opens one quote request per target and polls the status endpoint until just after the quote deadline.
 4. It stores every probe, with its raw HTTP exchanges, in D1.
-5. It rebuilds the public snapshot and the alert list from the store.
+5. On every `PUBLISH_EVERY_TICKS`th tick, it rebuilds the public snapshot and the alert list from the store.
 
 The Worker also serves the dashboard and four read-only endpoints.
 
 | Path                                  | Returns                                                            |
 | ------------------------------------- | ------------------------------------------------------------------ |
 | `/`                                   | The static dashboard                                               |
-| `/api/v1/snapshot.json`               | Current conditions for every corridor, written once per tick       |
+| `/api/v1/snapshot.json`               | Current conditions for every corridor, written once per publish    |
 | `/api/v1/corridors/{id}/history.json` | History for one corridor                                           |
 | `/api/v1/health`                      | `200` when no alert is active, `503` with the alert list otherwise |
 | `/metrics`                            | The same signals in Prometheus text format                         |
@@ -116,6 +116,8 @@ The Worker fits the limits of its plan by construction. It does not find them by
 | -------------------------- | ------------ | -------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Subrequests per invocation | 50           | 10,000               | A probe has a fixed worst-case cost, and a tick never plans more probes than `SUBREQUEST_LIMIT` covers       |
 | D1 rows written per day    | 100,000      | 50 million per month | A tick writes its probes. It rewrites the corridor list only when the list changes                           |
+| D1 rows read per day       | 5 million    | 25 billion per month | Only a publish reads the store widely, and a publish runs on every `PUBLISH_EVERY_TICKS`th tick              |
+| CPU time per invocation    | 10 ms        | 30 seconds           | Nothing yet. The CPU time of a tick on Cloudflare is not measured                                            |
 | Cron Trigger duration      | 15 minutes   | 15 minutes           | `scheduled()` awaits its work. It does not lean on `waitUntil`, which ends 30 seconds after an HTTP response |
 
 **A probe costs a fixed number of requests.** One create, then polls every `POLL_INTERVAL_MS` while the quote window is open, then one poll 500 ms after the quote deadline. The Worker knows the deadline, because it set it. With a 3 second window and a 500 ms interval that is 1 create and at most 6 polls: 7 requests, whatever the gateway does. A batch still `collecting` at that last poll is recorded as `incomplete`. The gateway closes a batch by its own clock, and the 500 ms covers the difference between the two clocks. In the three recorded testnet probes the batch was `ready` in a poll answered 213 to 246 ms after the deadline.
@@ -124,9 +126,20 @@ The Worker fits the limits of its plan by construction. It does not find them by
 
 **The corridor list is written when it changes.** The store keeps a hash of the discovered list. A tick whose list has the same hash writes no corridor row. Writing all 552 rows and their index on every tick was about 1,100 rows per tick, which alone passes the free daily limit at one tick every 10 minutes.
 
-**A platform refusal is not a gateway error.** If `fetch` still reports that the subrequest limit was passed, the tick stops as `subrequest_limit`, stores nothing for the probe that hit it, and logs the tick as an error. The Worker recognizes the refusal by the word `subrequest` in the error text. Cloudflare's exact text is not confirmed, because the limit cannot be reproduced locally. If the text differs, the refused probes are stored as `gateway_error` with a null HTTP status, as before this change.
+**A platform refusal is not a gateway error.** If `fetch` still reports that the subrequest limit was passed, the tick stops as `subrequest_limit`, stores nothing for the probe that hit it, and logs the tick as an error. The Worker recognizes the refusal by the word `subrequest` in the error text. On the deployed Worker the text was `Too many subrequests by single Worker invocation.` If Cloudflare changes it, the refused probes are stored as `gateway_error` with a null HTTP status, as before this change.
 
-To probe faster on the free plan, run ticks more often, not larger. The D1 read limit, 5 million rows a day, is the next bound. The rows a tick reads to rebuild the snapshot are not measured yet, so check the D1 metrics in the Cloudflare dashboard after you shorten the cron. On the paid plan, set `SUBREQUEST_LIMIT` to `10000` and choose any `PROBES_PER_TICK`.
+**Probing and publishing run at different rates.** The two free limits bind different things. The subrequest limit caps the probes in one tick, so more probes need more ticks. The D1 read limit caps how often the snapshot is rebuilt, because the rebuild reads the latest probe of every target. So the probe cron runs often, and a tick publishes only when its slot index is a multiple of `PUBLISH_EVERY_TICKS`. The rule needs no stored state. The publish interval is the tick interval times `PUBLISH_EVERY_TICKS`. The snapshot carries it as `publishIntervalMinutes`, and `prober_stale` and the dashboard's own staleness check count in publish intervals.
+
+Measured in the test pool with the 552 testnet corridors, 3 tiers and 1,600 stored probes. Cloudflare's own accounting on a deployed database is not measured.
+
+| Step                    | D1 rows read | D1 rows written  |
+| ----------------------- | ------------ | ---------------- |
+| A tick, without publish | 14           | 2, and 8 a probe |
+| A publish               | 11,908       | 9                |
+
+The committed configuration runs 6 probes every 2 minutes and publishes every 10 minutes. In a day that is 720 ticks, 4,320 probes and 144 publishes: about 1.7 million rows read, a third of the free limit, and about 46,000 rows written, under half of it. The written figure includes an estimate of 2 rows for each raw record that retention deletes.
+
+Rows written set the ceiling of the free plan, at roughly 9,000 probes a day. Rows read do not grow with the probe rate. On the paid plan, set `SUBREQUEST_LIMIT` to `10000` and choose any `PROBES_PER_TICK`.
 
 `/api/v1/health` returns `503` with `prober_stale` from a fresh deploy until the first tick finishes. Expect one red check after the first deploy.
 
@@ -138,7 +151,7 @@ Answers marked "measured" come from three tagged testnet quote requests sent on 
 
 Measured. Every gateway response carries `x-ratelimit-limit: 30`. The remaining count recovered within two seconds, so the limit is close to 30 requests per second per caller. One probe costs one `POST` and at most six `GET` calls over three and a half seconds. The gateway limit does not constrain a polite prober.
 
-Needs a person. The limit that matters is the work each broadcast gives to settler operators, and nobody has agreed a number. The cadence is `PROBES_PER_TICK` sequential probes on each run of the probe cron, and `wrangler.jsonc` holds both. The repository owner sets it, and the dashboard shows the current value. Testnet has 552 corridors and 3 tiers, which is 1,656 targets. As a guide, the committed configuration on the Workers Free plan runs 6 probes every 10 minutes: 36 broadcasts per hour, and one full sweep in 46 hours. With `SUBREQUEST_LIMIT` at the Workers Paid limit it runs all 30: 180 broadcasts per hour, and one sweep in about 9.2 hours. `PROBES_PER_TICK`, the cron schedule and `CORRIDOR_FILTER` change the rate. `PROBE_ENABLED=false` stops it.
+Needs a person. The limit that matters is the work each broadcast gives to settler operators, and nobody has agreed a number. The cadence is `PROBES_PER_TICK` sequential probes on each run of the probe cron, and `wrangler.jsonc` holds both. The repository owner sets it, and the dashboard shows the current value. Testnet has 552 corridors and 3 tiers, which is 1,656 targets. As a guide, the committed configuration runs 6 probes every 2 minutes, which fits the Workers Free plan: 180 broadcasts per hour, and one full sweep in about 9.2 hours. `PROBES_PER_TICK`, the cron schedule and `CORRIDOR_FILTER` change the rate. `PROBE_ENABLED=false` stops it.
 
 **Decision needed before deploy.** Confirm the rate in `wrangler.jsonc` with whoever runs the settlers, or give a number.
 
@@ -187,7 +200,7 @@ The condition does not rank operators and does not depend on who quoted.
 
 | Alert            | Fires when                                                                                                | Severity |
 | ---------------- | --------------------------------------------------------------------------------------------------------- | -------- |
-| `prober_stale`   | No tick finished within three intervals                                                                   | Critical |
+| `prober_stale`   | The newest tick in the snapshot finished more than three publish intervals ago, or no tick has finished   | Critical |
 | `gateway_errors` | Discovery failed or listed no usable chain, or half or more of a tick's probes were gateway errors        | Critical |
 | `quotes_lost`    | A corridor was quoted in the last 7 days, and the latest probe of every configured tier is now not quoted | Critical |
 | `slow_quotes`    | Time to first quote is above `SLOW_QUOTE_MS`                                                              | Warning  |
@@ -209,7 +222,7 @@ Two ways exist to learn that an alert fired. Use either, or both.
 
 The push path exists for a deployment that has only Cloudflare.
 
-The Worker has two Cron Triggers, and `scheduled()` tells them apart by `controller.cron`. `PROBE_CRON` and `CANARY_CRON` name the two expressions. A trigger whose expression matches neither does nothing and logs an error, so a mistyped variable can never turn the canary trigger into a second probe tick. The probe cron runs a tick. The canary cron, a few minutes later, builds the health report that `/api/v1/health` serves and compares its alerts with the alerts it has already announced.
+The Worker has two Cron Triggers, and `scheduled()` tells them apart by `controller.cron`. `PROBE_CRON` and `CANARY_CRON` name the two expressions. A trigger whose expression matches neither does nothing and logs an error, so a mistyped variable can never turn the canary trigger into a second probe tick. The probe cron runs a tick. The canary cron, a few minutes after each publish, builds the health report that `/api/v1/health` serves and compares its alerts with the alerts it has already announced.
 
 - An alert that is new is announced as raised.
 - An alert that is gone from the health report is announced as cleared. Raising `ALERT_MIN_SEVERITY` does not clear an alert that is still active.

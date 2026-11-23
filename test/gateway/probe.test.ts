@@ -15,6 +15,7 @@ import {
 	type Handler,
 	jsonResponse,
 	replay,
+	SUBREQUEST_REFUSAL,
 	scriptedFetch,
 } from "../support/fake-gateway";
 import {
@@ -274,7 +275,7 @@ describe("runProbe", () => {
 	it("marks a platform refusal of a subrequest so the tick can stop", async () => {
 		const record = await probe(
 			createThen(() => {
-				throw new Error("Too many subrequests.");
+				throw new Error(SUBREQUEST_REFUSAL);
 			}),
 		).run;
 		expect(record.outcome).toStrictEqual({
@@ -282,7 +283,7 @@ describe("runProbe", () => {
 			phase: "poll",
 			httpStatus: null,
 			code: "SUBREQUEST_LIMIT",
-			message: "transport: Error: Too many subrequests.",
+			message: `transport: Error: ${SUBREQUEST_REFUSAL}`,
 		});
 		expect(isSubrequestLimited(record.outcome)).toBe(true);
 		expect(isRateLimited(record.outcome)).toBe(false);
